@@ -1,6 +1,7 @@
 import { MessageInfo, whatsappService } from "@/services/whatsapp.service"
 import { memoryService } from "@/services/memory.service"
 import { llmService } from "@/services/llm.service"
+import { rateLimiter } from "@/services/ratelimit.service"
 import { AdminUtils } from "@/utils/admin.utils"
 import { createLogger } from "@/lib/logger"
 import { config } from "@/config/env"
@@ -25,13 +26,29 @@ export class MessageHandler {
       // In groups: only respond if mentioned OR replied to bot
       if (info.isGroup) {
         if (info.isMentioned || info.isReplyToBot) {
+          // Check rate limit for group users (not for admins)
+          if (!AdminUtils.isAdmin(info.sender)) {
+            if (!rateLimiter.canMakeRequest(info.sender)) {
+              const waitTime = rateLimiter.getTimeUntilReset(info.sender)
+              const rateLimitMsg = `⏱️ Slow down! You can only mention me ${config.RATE_LIMIT_MAX_REQUESTS} times per minute. Try again in ${waitTime} seconds.`
+
+              // Reply to user's message with rate limit warning
+              if (info.quotedMessage) {
+                await whatsappService.sendReply(info.from, rateLimitMsg, info.quotedMessage)
+              } else {
+                await whatsappService.sendMessage(info.from, rateLimitMsg)
+              }
+              return
+            }
+          }
+
           await this.handleAIResponse(info)
         }
         // Otherwise, just store in memory and don't respond
         return
       }
 
-      // In private chats: always respond
+      // In private chats: always respond (no rate limit for private chats)
       await this.handleAIResponse(info)
     } catch (error) {
       logger.error("Error in message handler:", error)
@@ -64,8 +81,12 @@ export class MessageHandler {
     // Add bot response to memory
     memoryService.addMessage("Bot", response)
 
-    // Send response
-    await whatsappService.sendMessage(info.from, response)
+    // Send response - use reply if original message is available
+    if (info.quotedMessage) {
+      await whatsappService.sendReply(info.from, response, info.quotedMessage)
+    } else {
+      await whatsappService.sendMessage(info.from, response)
+    }
   }
 
   /**

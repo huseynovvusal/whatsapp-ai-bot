@@ -30,6 +30,10 @@ export class Config {
   public MEMORY_WINDOW_MS: number
   public SYSTEM_PROMPT: string
 
+  // Rate Limiting Config
+  public RATE_LIMIT_MAX_REQUESTS: number
+  public RATE_LIMIT_WINDOW_MS: number
+
   constructor() {
     if (!process.env.NODE_ENV || !process.env.PORT || !process.env.LOG_LEVEL) {
       throw new Error("Missing required environment variables")
@@ -53,6 +57,10 @@ export class Config {
     // Memory
     this.MEMORY_WINDOW_MS = Number(process.env.MEMORY_WINDOW_MS) || 3600000
     this.SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || "You are a helpful AI assistant."
+
+    // Rate Limiting
+    this.RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS) || 2
+    this.RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60000 // 1 minute
 
     // Validate LLM credentials
     // if (this.LLM_PROVIDER === "openai" && !this.OPENAI_API_KEY) {

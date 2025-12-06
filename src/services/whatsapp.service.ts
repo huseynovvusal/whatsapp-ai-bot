@@ -22,6 +22,7 @@ export interface MessageInfo {
   isMentioned: boolean
   isReplyToBot: boolean
   messageId: string
+  quotedMessage?: proto.IWebMessageInfo // Store original message for replying
 }
 
 export type MessageHandler = (info: MessageInfo) => Promise<void>
@@ -109,6 +110,31 @@ export class WhatsAppService {
   }
 
   /**
+   * Send message as a reply to another message
+   */
+  public async sendReply(
+    to: string,
+    text: string,
+    quotedMessage: proto.IWebMessageInfo
+  ): Promise<void> {
+    if (!this.sock) {
+      throw new Error("WhatsApp is not connected")
+    }
+
+    try {
+      await this.sock.sendMessage(
+        to,
+        { text },
+        { quoted: quotedMessage as any } // Type assertion needed for Baileys compatibility
+      )
+      logger.info(`Reply sent to ${to}`)
+    } catch (error) {
+      logger.error("Error sending reply:", error)
+      throw new Error("Failed to send reply")
+    }
+  }
+
+  /**
    * Handle incoming message
    */
   private async handleIncomingMessage(msg: proto.IWebMessageInfo): Promise<void> {
@@ -146,6 +172,7 @@ export class WhatsAppService {
         isMentioned,
         isReplyToBot,
         messageId: msg.key.id || "",
+        quotedMessage: msg, // Store original message for replying
       }
 
       logger.info(
