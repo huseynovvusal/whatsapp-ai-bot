@@ -13,6 +13,11 @@ export interface RuntimeConfigSchema {
   adminNumbers?: string[]
   systemPrompt?: string
   geminiApiKey?: string
+  // LLM provider and OpenAI settings
+  llmProvider?: "openai" | "gemini"
+  openaiApiKey?: string
+  openaiModel?: string
+  openaiBaseUrl?: string
   respondToGroupMessages?: boolean
   contextualGroupResponses?: boolean
 }
@@ -33,6 +38,10 @@ export class RuntimeConfigService {
       adminNumbers: config.ADMIN_NUMBERS,
       systemPrompt: config.SYSTEM_PROMPT,
       geminiApiKey: config.GEMINI_API_KEY,
+      llmProvider: config.LLM_PROVIDER,
+      openaiApiKey: process.env.OPENAI_API_KEY,
+      openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      openaiBaseUrl: process.env.OPENAI_BASE_URL || "",
       respondToGroupMessages: false,
       contextualGroupResponses: false,
     }

@@ -75,12 +75,22 @@ router.post("/save", (req: Request, res: Response) => {
       )
     if ("systemPrompt" in body) runtimeConfig.set("systemPrompt", String(body.systemPrompt))
     if ("geminiApiKey" in body) runtimeConfig.set("geminiApiKey", String(body.geminiApiKey))
+    if ("llmProvider" in body) runtimeConfig.set("llmProvider", String(body.llmProvider) as any)
+    if ("openaiApiKey" in body) runtimeConfig.set("openaiApiKey", String(body.openaiApiKey))
+    if ("openaiModel" in body) runtimeConfig.set("openaiModel", String(body.openaiModel))
+    if ("openaiBaseUrl" in body) runtimeConfig.set("openaiBaseUrl", String(body.openaiBaseUrl))
     if ("respondToGroupMessages" in body)
       runtimeConfig.set("respondToGroupMessages", Boolean(body.respondToGroupMessages))
     if ("contextualGroupResponses" in body)
       runtimeConfig.set("contextualGroupResponses", Boolean(body.contextualGroupResponses))
     // If API key updated, reload LLM credentials
-    if ("geminiApiKey" in body) {
+    if (
+      "geminiApiKey" in body ||
+      "openaiApiKey" in body ||
+      "llmProvider" in body ||
+      "openaiModel" in body ||
+      "openaiBaseUrl" in body
+    ) {
       try {
         llmService.reloadCredentials()
       } catch (err) {

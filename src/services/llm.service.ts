@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
+import OpenAI from "openai"
 import { config } from "@/config/env"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { createLogger } from "@/lib/logger"
@@ -6,40 +7,58 @@ import { createLogger } from "@/lib/logger"
 const logger = createLogger(config.LOG_LEVEL, "LLMService")
 
 export class LLMService {
-  private genAI: GoogleGenerativeAI
-  private model: any
+  private provider: "openai" | "gemini" = "gemini"
+  // Gemini
+  private genAI?: GoogleGenerativeAI
+  private geminiModel?: any
+  // OpenAI
+  private openai?: OpenAI
+  private openaiModel?: string
 
   constructor() {
-    if (config.LLM_PROVIDER !== "gemini") {
-      throw new Error("LLM_PROVIDER must be set to 'gemini' in .env")
-    }
-
-    if (!config.GEMINI_API_KEY) {
-      throw new Error("GEMINI_API_KEY is required when using Gemini")
-    }
-
-    // Initialize Gemini using runtime config if present
-    const apiKey = (runtimeConfig.get("geminiApiKey") as string) || config.GEMINI_API_KEY
-    if (!apiKey) throw new Error("GEMINI_API_KEY is required when using Gemini")
-    this.genAI = new GoogleGenerativeAI(apiKey)
-    this.model = this.genAI.getGenerativeModel({
-      model: config.GEMINI_MODEL || "gemini-1.5-flash",
-    })
-
-    logger.info(`LLM initialized with Gemini model: ${config.GEMINI_MODEL}`)
+    this.initialize()
   }
 
   /**
    * Reload credentials and reinitialize LLM client
    */
   public reloadCredentials(): void {
+    this.initialize()
+    logger.info("LLM credentials reloaded")
+  }
+
+  private initialize(): void {
+    // Determine provider from runtime config or env
+    const provider = (runtimeConfig.get("llmProvider") as any) || config.LLM_PROVIDER || "gemini"
+    this.provider = provider
+
+    if (provider === "openai") {
+      const apiKey = (runtimeConfig.get("openaiApiKey") as string) || process.env.OPENAI_API_KEY
+      const baseURL = (runtimeConfig.get("openaiBaseUrl") as string) || process.env.OPENAI_BASE_URL
+      const model =
+        (runtimeConfig.get("openaiModel") as string) || process.env.OPENAI_MODEL || "gpt-4o-mini"
+      if (!apiKey) {
+        throw new Error("OPENAI_API_KEY is required when LLM provider is OpenAI")
+      }
+      this.openai = new OpenAI({ apiKey, baseURL })
+      this.openaiModel = model
+      this.genAI = undefined
+      this.geminiModel = undefined
+      logger.info(
+        `LLM initialized with OpenAI model: ${model}${baseURL ? ` (base: ${baseURL})` : ""}`
+      )
+      return
+    }
+
+    // Default to Gemini
     const apiKey = (runtimeConfig.get("geminiApiKey") as string) || config.GEMINI_API_KEY
     if (!apiKey) throw new Error("GEMINI_API_KEY is required when using Gemini")
     this.genAI = new GoogleGenerativeAI(apiKey)
-    this.model = this.genAI.getGenerativeModel({
+    this.geminiModel = this.genAI.getGenerativeModel({
       model: config.GEMINI_MODEL || "gemini-1.5-flash",
     })
-    logger.info("LLM credentials reloaded")
+    this.openai = undefined
+    logger.info(`LLM initialized with Gemini model: ${config.GEMINI_MODEL}`)
   }
 
   /**
@@ -57,12 +76,27 @@ ${context}
 User: ${userText}
 Assistant:`
 
-      // Generate response
-      const result = await this.model.generateContent(fullPrompt)
+      if (this.provider === "openai" && this.openai && this.openaiModel) {
+        const res = await this.openai.chat.completions.create({
+          model: this.openaiModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: `${context}\n\n${userText}` },
+          ],
+          temperature: 0.6,
+          max_tokens: 256,
+        })
+        const answer = res.choices?.[0]?.message?.content || ""
+        logger.info("LLM response received successfully (OpenAI)")
+        return answer
+      }
+
+      // Gemini path
+      if (!this.geminiModel) throw new Error("Gemini model not initialized")
+      const result = await this.geminiModel.generateContent(fullPrompt)
       const response = await result.response
       const answer = response.text()
-
-      logger.info("LLM response received successfully")
+      logger.info("LLM response received successfully (Gemini)")
       return answer
     } catch (error) {
       logger.error("Error calling LLM:", error)
@@ -90,9 +124,23 @@ You are assigned to decide whether the assistant should jump into a group chat g
 Message: ${userText}
 `
 
-      const result = await this.model.generateContent(prompt)
-      const response = await result.response
-      const text = response.text().trim()
+      let text = ""
+      if (this.provider === "openai" && this.openai && this.openaiModel) {
+        const res = await this.openai.chat.completions.create({
+          model: this.openaiModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: prompt },
+          ],
+          temperature: 0.3,
+        })
+        text = (res.choices?.[0]?.message?.content || "").trim()
+      } else {
+        if (!this.geminiModel) throw new Error("Gemini model not initialized")
+        const result = await this.geminiModel.generateContent(prompt)
+        const response = await result.response
+        text = response.text().trim()
+      }
 
       // Try to parse JSON directly
       try {
@@ -124,7 +172,15 @@ Message: ${userText}
    */
   public async ask(userText: string): Promise<string> {
     try {
-      const result = await this.model.generateContent(userText)
+      if (this.provider === "openai" && this.openai && this.openaiModel) {
+        const res = await this.openai.chat.completions.create({
+          model: this.openaiModel,
+          messages: [{ role: "user", content: userText }],
+        })
+        return res.choices?.[0]?.message?.content || ""
+      }
+      if (!this.geminiModel) throw new Error("Gemini model not initialized")
+      const result = await this.geminiModel.generateContent(userText)
       const response = await result.response
       return response.text()
     } catch (error) {

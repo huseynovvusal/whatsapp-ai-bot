@@ -229,12 +229,20 @@ export class MessageHandler {
         let totalMessages = 0
         for (const key in allMessages) totalMessages += (allMessages[key] || []).length
 
+        const currentProvider = (runtimeConfig.get("llmProvider") as any) || config.LLM_PROVIDER
+        const currentModel =
+          currentProvider === "openai"
+            ? (runtimeConfig.get("openaiModel") as string) ||
+              process.env.OPENAI_MODEL ||
+              "gpt-4o-mini"
+            : config.GEMINI_MODEL
+
         const statusText = `
 🤖 *Bot Status*
 
 📊 Memory: ${totalMessages} messages across ${conversationCount} conversations
 ⏰ Window: ${config.MEMORY_WINDOW_MS / 1000 / 60} minutes
-🧠 LLM: ${config.LLM_PROVIDER} (${config.LLM_PROVIDER === "openai" ? config.OPENAI_MODEL : config.GEMINI_MODEL})
+🧠 LLM: ${currentProvider} (${currentModel})
 👥 Admins: ${config.ADMIN_NUMBERS.length}
 
 System Prompt:

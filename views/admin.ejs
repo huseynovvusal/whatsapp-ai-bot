@@ -51,9 +51,34 @@
       </div>
 
       <div class="row">
+        <label>LLM Provider</label>
+        <select id="llmProvider" name="llmProvider">
+          <option value="gemini" <%= (runtime.llmProvider || 'gemini') === 'gemini' ? 'selected' : '' %>>Gemini</option>
+          <option value="openai" <%= (runtime.llmProvider || 'gemini') === 'openai' ? 'selected' : '' %>>OpenAI (GPT / DeepSeek)</option>
+        </select>
+        <small class="hint muted">Choose which AI provider to use. For DeepSeek, select OpenAI and set Base URL to https://api.deepseek.com.</small>
+      </div>
+
+      <div class="row" id="geminiKeyRow">
         <label>Gemini API Key</label>
         <input type="password" name="geminiApiKey" id="geminiApiKey" value="<%= runtime.geminiApiKey || '' %>" autocomplete="new-password" />
         <small class="hint muted">Stored on server; do not expose publicly</small>
+      </div>
+
+      <div class="grid">
+        <div class="row small" id="openaiKeyRow">
+          <label>OpenAI API Key</label>
+          <input type="password" name="openaiApiKey" id="openaiApiKey" value="<%= runtime.openaiApiKey || '' %>" autocomplete="new-password" />
+        </div>
+        <div class="row small" id="openaiModelRow">
+          <label>OpenAI Model</label>
+          <input type="text" name="openaiModel" id="openaiModel" value="<%= runtime.openaiModel || 'gpt-4o-mini' %>" />
+        </div>
+      </div>
+      <div class="row" id="openaiBaseUrlRow">
+        <label>OpenAI Base URL (optional)</label>
+        <input type="text" name="openaiBaseUrl" id="openaiBaseUrl" value="<%= runtime.openaiBaseUrl || '' %>" placeholder="e.g. https://api.deepseek.com" />
+        <small class="hint muted">Leave empty for OpenAI; use https://api.deepseek.com for DeepSeek.</small>
       </div>
 
       <div class="row switch">
