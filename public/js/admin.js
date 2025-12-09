@@ -65,9 +65,12 @@
       {
         const el = getInput('geminiApiKey'); if (state.geminiApiKey && el) el.value = state.geminiApiKey
       }
-      {
-        const el = getCheckbox('enablePrivateChat'); if (typeof state.enablePrivateChat !== 'undefined' && el) el.checked = state.enablePrivateChat
-      }
+        {
+          const el = getCheckbox('enablePrivateChat'); if (typeof state.enablePrivateChat !== 'undefined' && el) el.checked = state.enablePrivateChat
+        }
+        {
+          const el = getCheckbox('respondToGroupMessages'); if (typeof state.respondToGroupMessages !== 'undefined' && el) el.checked = state.respondToGroupMessages
+        }
     }catch(e){console.warn('Invalid local settings')}
   }
 

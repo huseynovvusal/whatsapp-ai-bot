@@ -1,4 +1,5 @@
 import { MessageInfo, whatsappService } from "@/services/whatsapp.service"
+import { cleanPhoneNumber as cleanPhoneFromJid } from "@/utils/phone.utils"
 import { memoryService } from "@/services/memory.service"
 import { llmService } from "@/services/llm.service"
 import { rateLimiter } from "@/services/ratelimit.service"
@@ -75,8 +76,24 @@ export class MessageHandler {
    */
   private async handleAIResponse(info: MessageInfo): Promise<void> {
     // Get context and system prompt
-    const context = memoryService.getContext(info.from)
+    let context = memoryService.getContext(info.from)
     const systemPrompt = memoryService.getSystemPrompt()
+
+    // If group, append group metadata to the start of the context to give the LLM more information
+    if (info.isGroup) {
+      try {
+        const g = await whatsappService.getGroupInfo(info.from)
+        if (g) {
+          const owner = cleanPhoneFromJid(g.owner || "")
+          const subject = g.subject || "(no subject)"
+          const participants = g.participantCount || 0
+          const groupMeta = `Group Metadata: SUBJECT: ${subject}\nOWNER: ${owner}\nPARTICIPANTS: ${participants}\n` // newline for separation
+          context = `${groupMeta}${context}`
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
 
     // Remove bot mention from text
     const botName = (runtimeConfig.get("botName") as string) || config.BOT_NAME
