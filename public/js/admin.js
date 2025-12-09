@@ -36,7 +36,8 @@
       rateLimitWindowMs: (getInput('rateLimitWindowMs') || { value: '' }).value,
       geminiApiKey: (getInput('geminiApiKey') || { value: '' }).value,
   // read the checkbox safely
-  enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })()
+  enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })(),
+  respondToGroupMessages: !!(function(){ const el = getCheckbox('respondToGroupMessages'); return el && el.checked })()
     }
     localStorage.setItem('whatsapp.bot.settings', JSON.stringify(state))
   }
@@ -82,7 +83,8 @@
       rateLimitMaxRequests: Number((getInput('rateLimitMaxRequests') || { value: 0 }).value),
       rateLimitWindowMs: Number((getInput('rateLimitWindowMs') || { value: 0 }).value),
       geminiApiKey: (getInput('geminiApiKey') || { value: '' }).value,
-  enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })()
+      enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })(),
+      respondToGroupMessages: !!(function(){ const el = getCheckbox('respondToGroupMessages'); return el && el.checked })()
     }
 
     // Validate inputs before POSTing

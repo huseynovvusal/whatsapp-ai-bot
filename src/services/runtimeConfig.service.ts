@@ -13,6 +13,7 @@ export interface RuntimeConfigSchema {
   adminNumbers?: string[]
   systemPrompt?: string
   geminiApiKey?: string
+  respondToGroupMessages?: boolean
 }
 
 export class RuntimeConfigService {
@@ -31,6 +32,7 @@ export class RuntimeConfigService {
       adminNumbers: config.ADMIN_NUMBERS,
       systemPrompt: config.SYSTEM_PROMPT,
       geminiApiKey: config.GEMINI_API_KEY,
+      respondToGroupMessages: false,
     }
 
     this.loadFromFile()

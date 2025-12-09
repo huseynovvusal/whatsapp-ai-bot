@@ -10,7 +10,7 @@ import { Boom } from "@hapi/boom"
 import { config } from "@/config/env"
 import { createLogger } from "@/lib/logger"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
-import { cleanPhoneNumber as cleanPhoneFromJid } from "@/utils/phone.utils"
+import { cleanPhoneNumber as cleanPhoneFromJid, baseFromJid } from "@/utils/phone.utils"
 import path from "path"
 import qrcode from "qrcode-terminal"
 
@@ -271,7 +271,12 @@ export class WhatsAppService {
     // Check if bot number is in mentioned JIDs
     const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
     const botNumber = this.sock?.user?.id
-    const mentionedByJid = botNumber ? mentionedJids.includes(botNumber) : false
+    let mentionedByJid = false
+    if (botNumber && mentionedJids && mentionedJids.length) {
+      // Normalize to base JID for comparison
+      const botBase = baseFromJid(botNumber)
+      mentionedByJid = mentionedJids.some((j) => baseFromJid(j) === botBase || j === botNumber)
+    }
 
     return mentionedInText || mentionedByJid
   }

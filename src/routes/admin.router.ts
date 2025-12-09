@@ -75,6 +75,8 @@ router.post("/save", (req: Request, res: Response) => {
       )
     if ("systemPrompt" in body) runtimeConfig.set("systemPrompt", String(body.systemPrompt))
     if ("geminiApiKey" in body) runtimeConfig.set("geminiApiKey", String(body.geminiApiKey))
+    if ("respondToGroupMessages" in body)
+      runtimeConfig.set("respondToGroupMessages", Boolean(body.respondToGroupMessages))
     // If API key updated, reload LLM credentials
     if ("geminiApiKey" in body) {
       try {

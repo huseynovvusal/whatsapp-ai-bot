@@ -26,7 +26,9 @@ export class MessageHandler {
 
       // In groups: only respond if mentioned OR replied to bot
       if (info.isGroup) {
-        if (info.isMentioned || info.isReplyToBot) {
+        const respondToGroups = runtimeConfig.get("respondToGroupMessages") as boolean | undefined
+        // If configured to respond to group messages, respond regardless of being mentioned
+        if (respondToGroups || info.isMentioned || info.isReplyToBot) {
           // Check rate limit for group users (not for admins)
           if (!AdminUtils.isAdmin(info.sender)) {
             if (!rateLimiter.canMakeRequest(info.sender)) {

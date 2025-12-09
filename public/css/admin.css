@@ -24,7 +24,7 @@ body {
   overflow-y: auto;
 }
 .container {
-  max-width: 1280px;
+  max-width: 80%;
   margin: 32px auto;
   padding: 20px;
 }
@@ -70,7 +70,7 @@ header .subtitle {
 .form-row {
   display: flex;
   flex-direction: column;
-  margin-bottom: 14px;
+  margin: 14px 0;
 }
 .row label,
 .form-row label {
@@ -111,8 +111,14 @@ textarea {
 }
 .switch {
   display: flex;
-  align-items: center;
+  flex-direction: row !important;
+  justify-content: space-between !important;
   gap: 12px;
+}
+.switch > .left {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
 }
 .actions {
   display: flex;
@@ -354,7 +360,7 @@ header .subtitle {
 }
 .layout {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 2fr 1fr;
   gap: 24px;
   align-items: start;
 }
