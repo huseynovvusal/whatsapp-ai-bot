@@ -26,6 +26,13 @@
     if (el instanceof HTMLInputElement && el.type === 'checkbox') return el
     return null
   }
+  /** @param {string} id */
+  function getSelect(id){
+    const el = document.getElementById(id)
+    if (!el) return null
+    if (el instanceof HTMLSelectElement) return el
+    return null
+  }
 
   function saveToLocal(){
     const state = {
@@ -35,6 +42,10 @@
       rateLimitMaxRequests: (getInput('rateLimitMaxRequests') || { value: '' }).value,
       rateLimitWindowMs: (getInput('rateLimitWindowMs') || { value: '' }).value,
       geminiApiKey: (getInput('geminiApiKey') || { value: '' }).value,
+  llmProvider: (function(){ const el = getSelect('llmProvider'); return el && el.value || 'gemini' })(),
+      openaiApiKey: (getInput('openaiApiKey') || { value: '' }).value,
+      openaiModel: (getInput('openaiModel') || { value: '' }).value,
+      openaiBaseUrl: (getInput('openaiBaseUrl') || { value: '' }).value,
   // read the checkbox safely
   enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })(),
   respondToGroupMessages: !!(function(){ const el = getCheckbox('respondToGroupMessages'); return el && el.checked })()
@@ -66,6 +77,18 @@
       {
         const el = getInput('geminiApiKey'); if (state.geminiApiKey && el) el.value = state.geminiApiKey
       }
+      {
+  const el = getSelect('llmProvider'); if (state.llmProvider && el) el.value = state.llmProvider
+      }
+      {
+        const el = getInput('openaiApiKey'); if (typeof state.openaiApiKey !== 'undefined' && el) el.value = state.openaiApiKey
+      }
+      {
+        const el = getInput('openaiModel'); if (typeof state.openaiModel !== 'undefined' && el) el.value = state.openaiModel
+      }
+      {
+        const el = getInput('openaiBaseUrl'); if (typeof state.openaiBaseUrl !== 'undefined' && el) el.value = state.openaiBaseUrl
+      }
         {
           const el = getCheckbox('enablePrivateChat'); if (typeof state.enablePrivateChat !== 'undefined' && el) el.checked = state.enablePrivateChat
         }
@@ -90,6 +113,10 @@
       rateLimitMaxRequests: Number((getInput('rateLimitMaxRequests') || { value: 0 }).value),
       rateLimitWindowMs: Number((getInput('rateLimitWindowMs') || { value: 0 }).value),
       geminiApiKey: (getInput('geminiApiKey') || { value: '' }).value,
+  llmProvider: (function(){ const el = getSelect('llmProvider'); return el && el.value || 'gemini' })(),
+      openaiApiKey: (getInput('openaiApiKey') || { value: '' }).value,
+      openaiModel: (getInput('openaiModel') || { value: '' }).value,
+      openaiBaseUrl: (getInput('openaiBaseUrl') || { value: '' }).value,
   enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })(),
   respondToGroupMessages: !!(function(){ const el = getCheckbox('respondToGroupMessages'); return el && el.checked })(),
   contextualGroupResponses: !!(function(){ const el = getCheckbox('contextualGroupResponses'); const parent = getCheckbox('respondToGroupMessages'); return el && el.checked && parent && parent.checked })()
@@ -135,6 +162,22 @@
 
   // Load local settings if present
   loadFromLocal()
+  // Provider toggle show/hide rows
+  const providerSelect = getSelect('llmProvider')
+  const geminiKeyRow = document.getElementById('geminiKeyRow')
+  const openaiKeyRow = document.getElementById('openaiKeyRow')
+  const openaiModelRow = document.getElementById('openaiModelRow')
+  const openaiBaseUrlRow = document.getElementById('openaiBaseUrlRow')
+  function updateProviderUI(){
+  const val = (providerSelect && providerSelect.value) || 'gemini'
+    const showOpenAI = val === 'openai'
+    if (geminiKeyRow) geminiKeyRow.style.display = showOpenAI ? 'none' : ''
+    if (openaiKeyRow) openaiKeyRow.style.display = showOpenAI ? '' : 'none'
+    if (openaiModelRow) openaiModelRow.style.display = showOpenAI ? '' : 'none'
+    if (openaiBaseUrlRow) openaiBaseUrlRow.style.display = showOpenAI ? '' : 'none'
+  }
+  if (providerSelect) providerSelect.addEventListener('change', updateProviderUI)
+  updateProviderUI()
   // Show/hide contextual toggle based on group toggle state
   const parentGroupCheck = getCheckbox('respondToGroupMessages')
   const contextualCheck = getCheckbox('contextualGroupResponses')
