@@ -7,7 +7,7 @@
     "dev": "nodemon --watch src --exec ts-node -r tsconfig-paths/register src/index.ts | pino-pretty -c",
     "start": "ts-node src/index.ts",
     "build": "tsc",
-    "prod": "node build/index.js"
+    "prettier": "prettier --write \"src/**/*.ts\" \"public/js/**/*.js\" \"./*.json\""
   },
   "keywords": [],
   "author": "",
@@ -19,6 +19,7 @@
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "ejs": "^3.1.9",
     "langchain": "^1.1.5",
     "openai": "^6.10.0",
     "qrcode-terminal": "^0.12.0",

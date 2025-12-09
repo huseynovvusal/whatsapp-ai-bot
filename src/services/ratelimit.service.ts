@@ -1,4 +1,5 @@
 import { config } from "@/config/env"
+import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { createLogger } from "@/lib/logger"
 
 const logger = createLogger(config.LOG_LEVEL, "RateLimiter")
@@ -17,8 +18,9 @@ export class RateLimiter {
    */
   public canMakeRequest(userId: string): boolean {
     const now = Date.now()
-    const windowMs = config.RATE_LIMIT_WINDOW_MS
-    const maxRequests = config.RATE_LIMIT_MAX_REQUESTS
+    const windowMs = Number(runtimeConfig.get("rateLimitWindowMs")) || config.RATE_LIMIT_WINDOW_MS
+    const maxRequests =
+      Number(runtimeConfig.get("rateLimitMaxRequests")) || config.RATE_LIMIT_MAX_REQUESTS
 
     // Get user's request history
     let requests = this.userRequests.get(userId) || []
@@ -45,8 +47,9 @@ export class RateLimiter {
    */
   public getRemainingRequests(userId: string): number {
     const now = Date.now()
-    const windowMs = config.RATE_LIMIT_WINDOW_MS
-    const maxRequests = config.RATE_LIMIT_MAX_REQUESTS
+    const windowMs = Number(runtimeConfig.get("rateLimitWindowMs")) || config.RATE_LIMIT_WINDOW_MS
+    const maxRequests =
+      Number(runtimeConfig.get("rateLimitMaxRequests")) || config.RATE_LIMIT_MAX_REQUESTS
 
     const requests = this.userRequests.get(userId) || []
     const activeRequests = requests.filter((req) => now - req.timestamp < windowMs)
@@ -59,7 +62,7 @@ export class RateLimiter {
    */
   public getTimeUntilReset(userId: string): number {
     const now = Date.now()
-    const windowMs = config.RATE_LIMIT_WINDOW_MS
+    const windowMs = Number(runtimeConfig.get("rateLimitWindowMs")) || config.RATE_LIMIT_WINDOW_MS
 
     const requests = this.userRequests.get(userId) || []
     if (requests.length === 0) return 0
@@ -77,7 +80,8 @@ export class RateLimiter {
     setInterval(
       () => {
         const now = Date.now()
-        const windowMs = config.RATE_LIMIT_WINDOW_MS
+        const windowMs =
+          Number(runtimeConfig.get("rateLimitWindowMs")) || config.RATE_LIMIT_WINDOW_MS
 
         for (const [userId, requests] of this.userRequests.entries()) {
           const activeRequests = requests.filter((req) => now - req.timestamp < windowMs)

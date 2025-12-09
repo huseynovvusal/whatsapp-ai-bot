@@ -29,6 +29,8 @@ export class Config {
   // Memory Config
   public MEMORY_WINDOW_MS: number
   public SYSTEM_PROMPT: string
+  // Private chat control
+  public ENABLE_PRIVATE_CHAT: boolean
 
   // Rate Limiting Config
   public RATE_LIMIT_MAX_REQUESTS: number
@@ -61,6 +63,8 @@ export class Config {
     // Rate Limiting
     this.RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS) || 2
     this.RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60000 // 1 minute
+    // Private chat: enabled by default
+    this.ENABLE_PRIVATE_CHAT = process.env.ENABLE_PRIVATE_CHAT !== "false"
 
     // Validate LLM credentials
     // if (this.LLM_PROVIDER === "openai" && !this.OPENAI_API_KEY) {
