@@ -53,3 +53,4 @@ Thumbs.db
 .jest_cache/
 
 auth_info_baileys/
+runtime_config.json

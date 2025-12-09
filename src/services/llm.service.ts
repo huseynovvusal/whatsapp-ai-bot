@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
 import { config } from "@/config/env"
+import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { createLogger } from "@/lib/logger"
 
 const logger = createLogger(config.LOG_LEVEL, "LLMService")
@@ -17,13 +18,28 @@ export class LLMService {
       throw new Error("GEMINI_API_KEY is required when using Gemini")
     }
 
-    // Initialize Gemini
-    this.genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY)
+    // Initialize Gemini using runtime config if present
+    const apiKey = (runtimeConfig.get("geminiApiKey") as string) || config.GEMINI_API_KEY
+    if (!apiKey) throw new Error("GEMINI_API_KEY is required when using Gemini")
+    this.genAI = new GoogleGenerativeAI(apiKey)
     this.model = this.genAI.getGenerativeModel({
       model: config.GEMINI_MODEL || "gemini-1.5-flash",
     })
 
     logger.info(`LLM initialized with Gemini model: ${config.GEMINI_MODEL}`)
+  }
+
+  /**
+   * Reload credentials and reinitialize LLM client
+   */
+  public reloadCredentials(): void {
+    const apiKey = (runtimeConfig.get("geminiApiKey") as string) || config.GEMINI_API_KEY
+    if (!apiKey) throw new Error("GEMINI_API_KEY is required when using Gemini")
+    this.genAI = new GoogleGenerativeAI(apiKey)
+    this.model = this.genAI.getGenerativeModel({
+      model: config.GEMINI_MODEL || "gemini-1.5-flash",
+    })
+    logger.info("LLM credentials reloaded")
   }
 
   /**

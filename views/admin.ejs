@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhatsApp Bot Admin</title>
+  <link rel="stylesheet" href="/static/css/admin.css" />
+</head>
+<body>
+  <main class="container dark">
+    <header>
+      <div>
+        <h1>WhatsApp Bot — Settings</h1>
+        <p class="subtitle">Minimal, professional configuration panel</p>
+      </div>
+      <div class="header-actions"></div>
+    </header>
+
+    <div class="layout">
+      <form id="settingsForm" class="card" novalidate>
+      <div class="row">
+        <label>Bot Name (Mention)</label>
+        <input type="text" name="botName" id="botName" value="<%= runtime.botName %>" required aria-required="true" />
+        <small class="error" id="err-botName" aria-live="polite"></small>
+      </div>
+
+      <div class="row">
+        <label>Admin Numbers (comma-separated)</label>
+        <input type="text" name="adminNumbers" id="adminNumbers" value="<%= (runtime.adminNumbers || []).join(',') %>" pattern="^[0-9+,\s]*$" placeholder="e.g. 994505347208,145264451047657" />
+        <small class="hint muted">Comma-separated international numbers (digits only)</small>
+        <small class="error" id="err-adminNumbers" aria-live="polite"></small>
+      </div>
+
+      <div class="row">
+        <label>System Prompt</label>
+        <textarea name="systemPrompt" id="systemPrompt" required aria-required="true"><%= runtime.systemPrompt %></textarea>
+        <small class="error" id="err-systemPrompt" aria-live="polite"></small>
+      </div>
+
+      <div class="grid">
+        <div class="row small">
+          <label>Rate Limit (max per window)</label>
+          <input type="number" name="rateLimitMaxRequests" id="rateLimitMaxRequests" value="<%= runtime.rateLimitMaxRequests %>" min="1" required />
+          <small class="error" id="err-rateLimitMaxRequests" aria-live="polite"></small>
+        </div>
+        <div class="row small">
+          <label>Rate Window (ms)</label>
+          <input type="number" name="rateLimitWindowMs" id="rateLimitWindowMs" value="<%= runtime.rateLimitWindowMs %>" min="1000" required />
+          <small class="error" id="err-rateLimitWindowMs" aria-live="polite"></small>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Gemini API Key</label>
+        <input type="password" name="geminiApiKey" id="geminiApiKey" value="<%= runtime.geminiApiKey || '' %>" autocomplete="new-password" />
+        <small class="hint muted">Stored on server; do not expose publicly</small>
+      </div>
+
+      <div class="row switch">
+        <label>Enable Private Chat Responses</label>
+        <div class="toggle-wrapper">
+          <input type="checkbox" id="enablePrivateChat" name="enablePrivateChat" class="toggle-input" <%= runtime.enablePrivateChat ? 'checked' : '' %> />
+          <label for="enablePrivateChat" class="toggle-label" aria-hidden="true"><span class="toggle-knob"></span></label>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn primary">Save</button>
+        <button type="button" id="resetLocal" class="btn ghost">Reset Local</button>
+      </div>
+
+      <p id="status" class="status"></p>
+      </form>
+      <section class="card conversations" id="conversations">
+      <h2>Conversations</h2>
+      <p class="subtitle">Active chats and message counts</p>
+      <div id="convoList"></div>
+      <div class="actions" style="margin-top:8px">
+        <button type="button" id="clearAll" class="btn">Clear All Memories</button>
+      </div>
+      </section>
+    </div>
+
+  </main>
+  <script src="/static/js/admin.js"></script>
+</body>
+</html>

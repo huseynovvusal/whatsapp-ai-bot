@@ -9,6 +9,8 @@ import makeWASocket, {
 import { Boom } from "@hapi/boom"
 import { config } from "@/config/env"
 import { createLogger } from "@/lib/logger"
+import { runtimeConfig } from "@/services/runtimeConfig.service"
+import { cleanPhoneNumber as cleanPhoneFromJid } from "@/utils/phone.utils"
 import path from "path"
 import qrcode from "qrcode-terminal"
 
@@ -17,6 +19,7 @@ const logger = createLogger(config.LOG_LEVEL, "WhatsAppService")
 export interface MessageInfo {
   from: string
   sender: string
+  groupName?: string
   text: string
   isGroup: boolean
   isMentioned: boolean
@@ -83,6 +86,45 @@ export class WhatsAppService {
         await this.handleIncomingMessage(msg)
       }
     })
+  }
+
+  /**
+   * Get group metadata (subject/title) for a group JID (e.g. 1203634xxx@g.us)
+   */
+  public async getGroupName(groupJid: string): Promise<string | undefined> {
+    if (!this.sock) return undefined
+    try {
+      // Baileys exposes groupMetadata on the socket in newer versions
+      // fall back gracefully if not available
+      // @ts-ignore
+      const meta = await (this.sock.groupMetadata?.(groupJid) || Promise.resolve(undefined))
+      return meta?.subject || undefined
+    } catch (err) {
+      logger.warn("Failed to fetch group metadata", err)
+      return undefined
+    }
+  }
+
+  /**
+   * Get richer group info: subject + owner + participant count
+   */
+  public async getGroupInfo(
+    groupJid: string
+  ): Promise<{ subject?: string; owner?: string; participantCount?: number } | undefined> {
+    if (!this.sock) return undefined
+    try {
+      // @ts-ignore
+      const meta = await (this.sock.groupMetadata?.(groupJid) || Promise.resolve(undefined))
+      if (!meta) return undefined
+      return {
+        subject: meta?.subject,
+        owner: meta?.owner,
+        participantCount: meta?.participants?.length || 0,
+      }
+    } catch (err) {
+      logger.warn("Failed to fetch group metadata", err)
+      return undefined
+    }
   }
 
   /**
@@ -164,9 +206,10 @@ export class WhatsAppService {
       // Check if message is a reply to bot's message
       const isReplyToBot = this.isReplyToBot(msg)
 
+      const cleanedSenderPhone = cleanPhoneFromJid(sender)
       const messageInfo: MessageInfo = {
         from,
-        sender: this.cleanPhoneNumber(sender),
+        sender: cleanedSenderPhone,
         text: text.trim(),
         isGroup: isGroup || false,
         isMentioned,
@@ -175,9 +218,28 @@ export class WhatsAppService {
         quotedMessage: msg, // Store original message for replying
       }
 
-      logger.info(
-        `📨 Message from ${messageInfo.sender} (Group: ${isGroup}, Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${text.substring(0, 50)}...`
-      )
+      // If this message is in a group, try to fetch the group subject/name for better logging
+      if (isGroup) {
+        try {
+          const name = await this.getGroupName(from)
+          if (name) messageInfo.groupName = name
+        } catch (err) {
+          logger.warn("Failed to fetch group name:", err)
+        }
+      }
+
+      // Log message with group label if present
+      if (messageInfo.isGroup) {
+        logger.info(
+          `📨 Message in group '${messageInfo.groupName || "(unknown)"}' from ${messageInfo.sender} (participant: ${
+            (msg.key as any).participant || "-"
+          }, chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${text.substring(0, 50)}...`
+        )
+      } else {
+        logger.info(
+          `📨 Message from ${messageInfo.sender} (chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${text.substring(0, 50)}...`
+        )
+      }
 
       // Call message handler
       if (this.messageHandler) {
@@ -187,7 +249,6 @@ export class WhatsAppService {
       logger.error("Error handling incoming message:", error)
     }
   }
-
   /**
    * Extract text from message content
    */
@@ -203,8 +264,9 @@ export class WhatsAppService {
    * Check if bot is mentioned in the message
    */
   private isBotMentioned(text: string, msg: proto.IWebMessageInfo): boolean {
-    // Check text for @bot mention
-    const mentionedInText = text.toLowerCase().includes(config.BOT_NAME.toLowerCase())
+    // Check text for @bot mention - use runtime config if available
+    const botName = (runtimeConfig.get("botName") as string) || config.BOT_NAME
+    const mentionedInText = text.toLowerCase().includes(botName.toLowerCase())
 
     // Check if bot number is in mentioned JIDs
     const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
@@ -240,12 +302,7 @@ export class WhatsAppService {
     return false
   }
 
-  /**
-   * Clean phone number from JID format
-   */
-  private cleanPhoneNumber(jid: string): string {
-    return jid.split("@")[0].split(":")[0]
-  }
+  // old helper removed — phone normalization uses util cleanPhoneFromJid
 }
 
 // Singleton instance

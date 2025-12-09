@@ -113,6 +113,24 @@ Example:
 !system You are a helpful coding assistant. Always provide code examples.
 ```
 
+## 🛠️ Admin Web UI
+
+A minimalist admin UI is available at `/admin` (when the bot is running). It allows you to:
+
+- Update configuration settings: Bot name, admin numbers, rate limits, system prompt, and API key
+- Toggle private chat responses on or off (enable/disable)
+- Save settings; these get persisted on the server and also optionally stored in your browser's localStorage for quick local recovery
+
+When you save settings from the UI, the server validates and persists them to a `runtime_config.json` file; the bot picks them up immediately without a restart (where applicable).
+
+Note: The Admin UI is intentionally minimal and does not include authentication; ensure it is only accessible on trusted networks or behind a reverse proxy with authentication.
+
+**Access the admin panel:**
+1. Run the bot: `npm run dev`
+2. Open your browser and go to: `http://localhost:3000/admin`
+
+Changes you make in the UI are persisted to `runtime_config.json` server-side and stored locally in the browser's localStorage as well.
+
 ## ⚙️ Configuration
 
 ### Environment Variables

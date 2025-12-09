@@ -1,11 +1,26 @@
 import { config } from "@/config/env"
+import { runtimeConfig } from "@/services/runtimeConfig.service"
 
 export class AdminUtils {
   /**
    * Check if a phone number is an admin
    */
   public static isAdmin(phoneNumber: string): boolean {
-    return config.ADMIN_NUMBERS.includes(phoneNumber)
+    const runtimeAdmins = (runtimeConfig.get("adminNumbers") as string[]) || config.ADMIN_NUMBERS
+
+    // Normalize strings to digits only to support phone numbers and WhatsApp JIDs
+    const normalize = (s?: string) => (s || "").toString().replace(/\D/g, "")
+    const candidate = normalize(phoneNumber)
+
+    for (const admin of runtimeAdmins) {
+      if (!admin) continue
+      // If normalized forms equal, it's a match
+      if (normalize(admin) === candidate) return true
+      // Also allow exact match (for JID styles or other formats)
+      if (admin === phoneNumber) return true
+    }
+
+    return false
   }
 
   /**
