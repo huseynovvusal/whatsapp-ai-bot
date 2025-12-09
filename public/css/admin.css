@@ -114,11 +114,13 @@ textarea {
   flex-direction: row !important;
   justify-content: space-between !important;
   gap: 12px;
+  align-items: center; /* center toggle vertically beside multi-line label */
 }
 .switch > .left {
   display: flex;
   flex: 1;
   flex-direction: column;
+  align-items: flex-start; /* keep text left-aligned */
 }
 .actions {
   display: flex;
@@ -127,39 +129,79 @@ textarea {
   margin-top: 12px;
 }
 
+/* Visual grouping for group related settings */
+.group-section {
+  margin-top: 18px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.02);
+}
+.group-subtle {
+  margin-left: 24px;
+  margin-top: 8px;
+}
+/* indent the left side without moving the toggle */
+.group-subtle .left {
+  padding-left: 22px;
+}
+.group-subtle .hint {
+  margin-top: 4px;
+}
+.sub {
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .btn {
-  padding: 10px 16px;
+  padding: 11px 18px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: #0b1322;
   color: #e6eef6;
   cursor: pointer;
   font-weight: 600;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   transition:
     transform 80ms ease,
     box-shadow 120ms ease,
-    background 160ms ease;
+    background 160ms ease,
+    border-color 160ms ease;
 }
 .btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 20px rgba(2, 6, 23, 0.55);
 }
+.btn:active {
+  transform: translateY(0);
+  box-shadow: 0 4px 12px rgba(2, 6, 23, 0.45);
+}
 .btn.primary {
-  background: #0ea5a3;
-  color: #05121c;
+  background: linear-gradient(90deg, #06b6d4, #06d6a6);
+  color: #04131f;
   border-color: transparent;
 }
 .btn.primary:hover {
-  background: #11b6b4;
+  background: linear-gradient(90deg, #08c0de, #08deb4);
 }
 .btn.ghost {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .status {
   margin-top: 8px;
   color: #9fb3c6;
   font-size: 13px;
+}
+.group-section {
+  margin-top: 18px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
 }
 .status.saved {
   color: #34d399;
@@ -273,19 +315,22 @@ textarea:focus {
 
 /* Toggle (switch) styles */
 .toggle-wrapper {
-  display: inline-block;
+  display: inline-flex;
   position: relative;
+  align-self: center; /* ensure toggle vertically centers in the switch row */
 }
 .toggle-input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
+  position: absolute !important;
+  opacity: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  left: -9999px !important;
 }
 .toggle-label {
-  display: inline-block;
-  width: 52px;
-  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  width: 56px;
+  height: 32px;
   background: rgba(255, 255, 255, 0.08);
   border-radius: 999px;
   position: relative;
@@ -297,11 +342,14 @@ textarea:focus {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border-radius: 999px;
   background: #e6eef6;
-  transition: transform 150ms ease;
+  transition:
+    transform 150ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
   box-shadow: 0 1px 2px rgba(2, 6, 23, 0.4);
 }
 .toggle-input:checked + .toggle-label {
@@ -309,8 +357,34 @@ textarea:focus {
   border-color: transparent;
 }
 .toggle-input:checked + .toggle-label .toggle-knob {
-  transform: translateX(22px);
+  transform: translateX(24px);
   background: #04121e;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.switch {
+  /* switch row layout */
+  display: flex;
+  flex-direction: row !important;
+  justify-content: space-between !important;
+  gap: 12px;
+  align-items: center;
+}
+.switch > .left {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.switch .hint {
+  margin-top: 4px;
+}
+.group-subtle .left {
+  padding-left: 22px;
+}
+.group-section {
+  margin-top: 18px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 /* Error hint */
@@ -715,8 +789,8 @@ textarea:focus {
 }
 .toggle-label {
   display: inline-block;
-  width: 48px;
-  height: 28px;
+  width: 52px;
+  height: 30px;
   background: rgba(255, 255, 255, 0.06);
   border-radius: 999px;
   position: relative;
@@ -727,10 +801,10 @@ textarea:focus {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
-  background: #fff;
+  background: #e6eef6;
   transition: transform 150ms ease;
   box-shadow: 0 1px 2px rgba(2, 6, 23, 0.6);
 }
@@ -738,7 +812,7 @@ textarea:focus {
   background: linear-gradient(90deg, #06b6d4, #06d6a6);
 }
 .toggle-input:checked + .toggle-label .toggle-knob {
-  transform: translateX(20px);
+  transform: translateX(22px);
   background: #021018;
 }
 
@@ -762,4 +836,67 @@ textarea:focus,
 .toggle-label:focus {
   outline: 2px solid rgba(14, 165, 163, 0.12);
   box-shadow: 0 0 0 3px rgba(14, 165, 163, 0.06);
+}
+
+/* Strong overrides to ensure native checkboxes are hidden and toggles display consistently */
+.card .row.switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.card .row.switch > .left {
+  flex: 1;
+}
+.card .toggle-wrapper {
+  width: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.card .toggle-input {
+  position: absolute !important;
+  left: -9999px !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.card .toggle-label {
+  display: inline-block;
+  width: 52px;
+  height: 30px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  position: relative;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.card .toggle-label .toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #e6eef6;
+  transition: transform 150ms ease;
+  box-shadow: 0 1px 2px rgba(2, 6, 23, 0.6);
+}
+.card .toggle-input:checked + .toggle-label {
+  background: linear-gradient(90deg, #06b6d4, #06d6a6);
+  border-color: transparent;
+}
+.card .toggle-input:checked + .toggle-label .toggle-knob {
+  transform: translateX(22px);
+  background: #021018;
+}
+
+/* Improve button visuals inside cards specifically (ensure readable, larger targets) */
+.card .actions .btn {
+  padding: 10px 18px;
+  font-size: 14px;
+}
+.card .actions {
+  align-items: center;
 }

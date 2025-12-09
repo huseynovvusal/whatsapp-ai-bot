@@ -67,15 +67,28 @@
           <label for="enablePrivateChat" class="toggle-label" aria-hidden="true"><span class="toggle-knob"></span></label>
         </div>
       </div>
-      <div class="row switch">
-        <div class="left">
+      <div class="group-section">
+        <div class="row switch">
+          <div class="left">
             <label>Respond to Group Messages</label>
-        <small class="hint muted">If enabled, the bot will respond to group messages even when not directly mentioned.</small>
+            <small class="hint muted">If enabled, the bot will respond to group messages even when not directly mentioned.</small>
+          </div>
+
+          <div class="toggle-wrapper">
+            <input type="checkbox" id="respondToGroupMessages" name="respondToGroupMessages" class="toggle-input" <%= runtime.respondToGroupMessages ? 'checked' : '' %> />
+            <label for="respondToGroupMessages" class="toggle-label" aria-hidden="true"><span class="toggle-knob"></span></label>
+          </div>
         </div>
 
+        <div class="row switch group-subtle" id="groupContextRow">
+        <div class="left">
+          <label class="sub">Contextual Group Responses</label>
+          <small class="hint muted">When enabled, the bot will use context (and a small LLM judgement) to decide if it should jump into the conversation spontaneously. This only applies when Group Responses are enabled.</small>
+        </div>
         <div class="toggle-wrapper">
-          <input type="checkbox" id="respondToGroupMessages" name="respondToGroupMessages" class="toggle-input" <%= runtime.respondToGroupMessages ? 'checked' : '' %> />
-          <label for="respondToGroupMessages" class="toggle-label" aria-hidden="true"><span class="toggle-knob"></span></label>
+          <input type="checkbox" id="contextualGroupResponses" name="contextualGroupResponses" class="toggle-input" <%= runtime.contextualGroupResponses ? 'checked' : '' %> />
+          <label for="contextualGroupResponses" class="toggle-label" aria-hidden="true"><span class="toggle-knob"></span></label>
+        </div>
         </div>
       </div>
 

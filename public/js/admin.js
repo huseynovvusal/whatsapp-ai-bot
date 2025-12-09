@@ -30,7 +30,7 @@
   function saveToLocal(){
     const state = {
       botName: (getInput('botName') || { value: '' }).value,
-      adminNumbers: (getInput('adminNumbers') || { value: '' }).value,
+  adminNumbers: (getInput('adminNumbers') || { value: '' }).value,
       systemPrompt: (getInput('systemPrompt') || { value: '' }).value,
       rateLimitMaxRequests: (getInput('rateLimitMaxRequests') || { value: '' }).value,
       rateLimitWindowMs: (getInput('rateLimitWindowMs') || { value: '' }).value,
@@ -38,6 +38,7 @@
   // read the checkbox safely
   enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })(),
   respondToGroupMessages: !!(function(){ const el = getCheckbox('respondToGroupMessages'); return el && el.checked })()
+  ,contextualGroupResponses: !!(function(){ const el = getCheckbox('contextualGroupResponses'); const parent = getCheckbox('respondToGroupMessages'); return el && el.checked && parent && parent.checked })()
     }
     localStorage.setItem('whatsapp.bot.settings', JSON.stringify(state))
   }
@@ -71,6 +72,9 @@
         {
           const el = getCheckbox('respondToGroupMessages'); if (typeof state.respondToGroupMessages !== 'undefined' && el) el.checked = state.respondToGroupMessages
         }
+        {
+          const el = getCheckbox('contextualGroupResponses'); if (typeof state.contextualGroupResponses !== 'undefined' && el) el.checked = state.contextualGroupResponses
+        }
     }catch(e){console.warn('Invalid local settings')}
   }
 
@@ -86,8 +90,9 @@
       rateLimitMaxRequests: Number((getInput('rateLimitMaxRequests') || { value: 0 }).value),
       rateLimitWindowMs: Number((getInput('rateLimitWindowMs') || { value: 0 }).value),
       geminiApiKey: (getInput('geminiApiKey') || { value: '' }).value,
-      enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })(),
-      respondToGroupMessages: !!(function(){ const el = getCheckbox('respondToGroupMessages'); return el && el.checked })()
+  enablePrivateChat: !!(function(){ const el = getCheckbox('enablePrivateChat'); return el && el.checked })(),
+  respondToGroupMessages: !!(function(){ const el = getCheckbox('respondToGroupMessages'); return el && el.checked })(),
+  contextualGroupResponses: !!(function(){ const el = getCheckbox('contextualGroupResponses'); const parent = getCheckbox('respondToGroupMessages'); return el && el.checked && parent && parent.checked })()
     }
 
     // Validate inputs before POSTing
@@ -130,6 +135,23 @@
 
   // Load local settings if present
   loadFromLocal()
+  // Show/hide contextual toggle based on group toggle state
+  const parentGroupCheck = getCheckbox('respondToGroupMessages')
+  const contextualCheck = getCheckbox('contextualGroupResponses')
+  const groupContextRow = document.getElementById('groupContextRow')
+  function updateContextualToggleVisibility(){
+    if (!groupContextRow || !parentGroupCheck) return
+    if (parentGroupCheck.checked){
+      groupContextRow.style.display = ''
+      if (contextualCheck) contextualCheck.disabled = false
+    } else {
+      groupContextRow.style.display = 'none'
+      if (contextualCheck){ contextualCheck.disabled = true; contextualCheck.checked = false }
+    }
+  }
+  if (parentGroupCheck) parentGroupCheck.addEventListener('change', updateContextualToggleVisibility)
+  // initial run
+  updateContextualToggleVisibility()
   // Fetch and render conversation list
   async function fetchConversations(){
     try{
@@ -153,7 +175,11 @@
         left.style.gap = '10px'
   const idSpan = document.createElement('span')
   idSpan.className = 'convo-id'
-  idSpan.textContent = c.name ? `${c.name} — ${c.id}` : c.id
+  if (c && 'name' in c && c['name']) {
+    idSpan.textContent = `${c['name']} — ${c.id}`
+  } else {
+    idSpan.textContent = c.id
+  }
         const badge = document.createElement('span')
         badge.className = 'badge'
         badge.title = 'Messages in memory'

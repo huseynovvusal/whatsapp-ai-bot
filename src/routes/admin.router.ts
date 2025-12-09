@@ -77,6 +77,8 @@ router.post("/save", (req: Request, res: Response) => {
     if ("geminiApiKey" in body) runtimeConfig.set("geminiApiKey", String(body.geminiApiKey))
     if ("respondToGroupMessages" in body)
       runtimeConfig.set("respondToGroupMessages", Boolean(body.respondToGroupMessages))
+    if ("contextualGroupResponses" in body)
+      runtimeConfig.set("contextualGroupResponses", Boolean(body.contextualGroupResponses))
     // If API key updated, reload LLM credentials
     if ("geminiApiKey" in body) {
       try {

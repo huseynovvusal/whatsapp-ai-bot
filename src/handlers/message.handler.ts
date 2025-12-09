@@ -11,6 +11,8 @@ import { config } from "@/config/env"
 const logger = createLogger(config.LOG_LEVEL, "MessageHandler")
 
 export class MessageHandler {
+  private lastContextualReplyAt: Map<string, number> = new Map()
+  private contextualCooldownMs = 60 * 1000 // one minute cooldown between spontaneous replies per chat
   /**
    * Handle incoming WhatsApp message
    */
@@ -28,8 +30,10 @@ export class MessageHandler {
       // In groups: only respond if mentioned OR replied to bot
       if (info.isGroup) {
         const respondToGroups = runtimeConfig.get("respondToGroupMessages") as boolean | undefined
-        // If configured to respond to group messages, respond regardless of being mentioned
-        if (respondToGroups || info.isMentioned || info.isReplyToBot) {
+        const contextualMode = runtimeConfig.get("contextualGroupResponses") as boolean | undefined
+
+        // If mentioned or a reply to bot — immediate handle
+        if (info.isMentioned || info.isReplyToBot) {
           // Check rate limit for group users (not for admins)
           if (!AdminUtils.isAdmin(info.sender)) {
             if (!rateLimiter.canMakeRequest(info.sender)) {
@@ -37,8 +41,6 @@ export class MessageHandler {
               const maxRequests =
                 Number(runtimeConfig.get("rateLimitMaxRequests")) || config.RATE_LIMIT_MAX_REQUESTS
               const rateLimitMsg = `⏱️ Slow down! You can only mention me ${maxRequests} times in the configured time window. Try again in ${waitTime} seconds.`
-
-              // Reply to user's message with rate limit warning
               if (info.quotedMessage) {
                 await whatsappService.sendReply(info.from, rateLimitMsg, info.quotedMessage)
               } else {
@@ -47,8 +49,63 @@ export class MessageHandler {
               return
             }
           }
-
           await this.handleAIResponse(info)
+          return
+        }
+
+        // If respondToGroups is enabled, decide behavior
+        if (respondToGroups) {
+          if (contextualMode) {
+            // Contextual mode: ask low-cost LLM helper whether to reply.
+            const last = this.lastContextualReplyAt.get(info.from) || 0
+            const now = Date.now()
+            if (now - last < this.contextualCooldownMs) {
+              return
+            }
+            // Build context and ask LLM whether to reply
+            const ctx = memoryService.getContext(info.from)
+            const sys = memoryService.getSystemPrompt()
+            try {
+              const decision = await llmService.askForReactiveReply(info.text, ctx, sys)
+              if (decision.shouldReply) {
+                // Rate-limiting check
+                if (!AdminUtils.isAdmin(info.sender)) {
+                  if (!rateLimiter.canMakeRequest(info.sender)) return
+                }
+                if (info.quotedMessage)
+                  await whatsappService.sendReply(
+                    info.from,
+                    decision.reply || "",
+                    info.quotedMessage
+                  )
+                else await whatsappService.sendMessage(info.from, decision.reply || "")
+                await memoryService.addMessage(info.from, "Bot", decision.reply || "")
+                this.lastContextualReplyAt.set(info.from, now)
+              }
+            } catch (err) {
+              logger.warn("Contextual decision LLM failed", err)
+            }
+            return
+          } else {
+            // Non contextual: reply to all messages (still check rate limit)
+            if (!AdminUtils.isAdmin(info.sender)) {
+              if (!rateLimiter.canMakeRequest(info.sender)) {
+                const waitTime = rateLimiter.getTimeUntilReset(info.sender)
+                const maxRequests =
+                  Number(runtimeConfig.get("rateLimitMaxRequests")) ||
+                  config.RATE_LIMIT_MAX_REQUESTS
+                const rateLimitMsg = `⏱️ Slow down! You can only mention me ${maxRequests} times in the configured time window. Try again in ${waitTime} seconds.`
+                if (info.quotedMessage) {
+                  await whatsappService.sendReply(info.from, rateLimitMsg, info.quotedMessage)
+                } else {
+                  await whatsappService.sendMessage(info.from, rateLimitMsg)
+                }
+                return
+              }
+            }
+            await this.handleAIResponse(info)
+            return
+          }
         }
         // Otherwise, just store in memory and don't respond
         return

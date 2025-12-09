@@ -14,6 +14,7 @@ export interface RuntimeConfigSchema {
   systemPrompt?: string
   geminiApiKey?: string
   respondToGroupMessages?: boolean
+  contextualGroupResponses?: boolean
 }
 
 export class RuntimeConfigService {
@@ -33,6 +34,7 @@ export class RuntimeConfigService {
       systemPrompt: config.SYSTEM_PROMPT,
       geminiApiKey: config.GEMINI_API_KEY,
       respondToGroupMessages: false,
+      contextualGroupResponses: false,
     }
 
     this.loadFromFile()
