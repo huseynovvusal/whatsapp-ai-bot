@@ -25,7 +25,7 @@ export class MemoryService {
   private messageLimit: number
   private retentionMs: number
 
-  constructor(messageLimit = 10, retentionMs = 60 * 60 * 1000) {
+  constructor(messageLimit = 25, retentionMs = 60 * 60 * 1000) {
     // Default: last 10 messages, 1 hour retention
     this.messageLimit = messageLimit
     this.retentionMs = retentionMs

@@ -1,6 +1,24 @@
 # 🤖 WhatsApp Group AI Bot
 
+![Admin UI Screenshot](./assets/screenshot.png)
+
 A TypeScript-based WhatsApp bot using Baileys and Google Gemini AI to respond to messages in groups and private chats.
+
+## Table of Contents
+- Features
+- Quick Start
+- How to Connect Your WhatsApp Number
+- New Features Highlights
+- Project Structure
+- Usage
+- Admin Commands & Web UI
+- Configuration
+- Security
+- Development
+- Troubleshooting
+- Dependencies
+- Features Explained
+- License & Contributing
 
 ## 📋 Features
 
@@ -48,6 +66,50 @@ npm run prod
 ### 4. Scan QR Code
 
 When you run the bot, a QR code will appear in your terminal. Scan it with WhatsApp on your phone.
+
+## 📱 How to Connect Your WhatsApp Number
+
+Follow these steps to link your WhatsApp number to the bot.
+
+1) Restart the bot to show the QR code
+
+```bash
+npm run dev
+```
+
+You’ll see a QR block in the terminal with guidance to open WhatsApp → Settings → Linked Devices → Link a Device.
+
+2) Scan the QR code
+
+- Open WhatsApp → Settings → Linked Devices → Link a Device
+- Scan the terminal QR code
+- Wait a few seconds for confirmation
+
+3) What happens next
+
+- The scanned WhatsApp number becomes the bot’s number
+- In groups, the bot responds when mentioned (e.g., `@bot`)
+- In private chats, the bot responds to all messages
+- Session is saved in `auth_info_baileys/` so future runs won’t require QR
+
+4) Testing tips
+
+- Send `!status` to the bot to see current configuration and memory stats
+- Mention the bot in a group: `@bot what is TypeScript?`
+
+Troubleshooting
+
+- If QR doesn’t render, ensure UTF-8 terminal support
+- If connection closes, wait a few minutes and retry
+- If “Not Logged In” shows, it’s ready and waiting for QR scan
+
+Admin number format
+
+Update `ADMIN_NUMBERS` in `.env` with your number in digit-only international format (no `+`, spaces, or punctuation):
+
+```bash
+ADMIN_NUMBERS=1234567890,9876543210
+```
 
 ## 📁 Project Structure
 
@@ -130,6 +192,60 @@ Note: The Admin UI is intentionally minimal and does not include authentication;
 2. Open your browser and go to: `http://localhost:3000/admin`
 
 Changes you make in the UI are persisted to `runtime_config.json` server-side and stored locally in the browser's localStorage as well.
+
+## 🎉 New Features Highlights
+
+### 1) Native WhatsApp Reply Functionality
+
+Bot responses in groups and private chats now use WhatsApp’s native reply feature. This clearly shows the quoted message the bot is responding to, improving readability in busy conversations.
+
+Benefits:
+- Clear context and threading
+- Native WhatsApp UX
+
+### 2) Rate Limiting (Configurable)
+
+Prevent spam and manage usage in groups.
+
+Defaults:
+- Max requests: 2 mentions per user
+- Time window: 60 seconds
+- Applies to: Group members (admins exempt)
+- Private chats: No rate limit
+
+Configure via `.env`:
+
+```bash
+RATE_LIMIT_MAX_REQUESTS=2
+RATE_LIMIT_WINDOW_MS=60000
+```
+
+Examples:
+
+```bash
+# 3 per minute
+RATE_LIMIT_MAX_REQUESTS=3
+RATE_LIMIT_WINDOW_MS=60000
+
+# 5 per 2 minutes
+RATE_LIMIT_MAX_REQUESTS=5
+RATE_LIMIT_WINDOW_MS=120000
+
+# Strict: 1 per 30s
+RATE_LIMIT_MAX_REQUESTS=1
+RATE_LIMIT_WINDOW_MS=30000
+```
+
+Notes:
+- Admins are exempt
+- Private chats are exempt
+- Automatic cleanup of old records
+
+Technical references:
+- `src/services/ratelimit.service.ts`
+- `src/config/env.ts`
+- `src/services/whatsapp.service.ts` (reply method)
+- `src/handlers/message.handler.ts` (integration)
 
 ## ⚙️ Configuration
 
@@ -242,7 +358,7 @@ Logs are stored in the `logs/` directory:
 
 ## 📝 License
 
-ISC
+MIT License — see `LICENSE` for full text.
 
 ## 🤝 Contributing
 

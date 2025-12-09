@@ -84,6 +84,7 @@ Assistant:`
             { role: "user", content: `${context}\n\n${userText}` },
           ],
           temperature: 0.6,
+          max_tokens: 256,
         })
         const answer = res.choices?.[0]?.message?.content || ""
         logger.info("LLM response received successfully (OpenAI)")
