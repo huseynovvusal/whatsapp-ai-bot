@@ -1,5 +1,6 @@
 import makeWASocket, {
   DisconnectReason,
+  fetchLatestWaWebVersion,
   useMultiFileAuthState,
   WASocket,
   proto,
@@ -33,15 +34,26 @@ export type MessageHandler = (info: MessageInfo) => Promise<void>
 export class WhatsAppService {
   private sock: WASocket | null = null
   private messageHandler: MessageHandler | null = null
+  private reconnectDelayMs = 5000
+  private reconnecting = false
 
   /**
    * Start WhatsApp connection
    */
   public async connect(): Promise<void> {
+    if (this.reconnecting) {
+      logger.info("Already reconnecting, skipping duplicate connect call")
+      return
+    }
+
     const authPath = path.join(__dirname, "../../auth_info_baileys")
     const { state, saveCreds } = await useMultiFileAuthState(authPath)
 
+    const { version, isLatest } = await fetchLatestWaWebVersion()
+    logger.info(`Fetched WA Web version: ${version.join('.')}, isLatest: ${isLatest}`)
+
     this.sock = makeWASocket({
+      version,
       auth: state,
     })
 
@@ -64,15 +76,32 @@ export class WhatsAppService {
       }
 
       if (connection === "close") {
-        const shouldReconnect =
-          (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut
+        const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut
 
-        logger.warn("Connection closed. Reconnecting:", shouldReconnect)
+        logger.warn("Connection closed. Reconnecting:", {
+          shouldReconnect,
+          statusCode,
+          reason: lastDisconnect?.error?.message || "unknown",
+        })
 
         if (shouldReconnect) {
-          await this.connect()
+          if (this.reconnecting) {
+            logger.info("Reconnect already scheduled, skipping")
+            return
+          }
+          this.reconnecting = true
+          setTimeout(async () => {
+            this.reconnecting = false
+            try {
+              await this.connect()
+            } catch (err) {
+              logger.error("Reconnect attempt failed:", err)
+            }
+          }, this.reconnectDelayMs)
         }
       } else if (connection === "open") {
+        this.reconnecting = false
         logger.info("✅ WhatsApp connection established successfully!")
         if (this.sock?.user) {
           logger.info(`📱 Connected as: ${this.sock.user.name || this.sock.user.id}`)
