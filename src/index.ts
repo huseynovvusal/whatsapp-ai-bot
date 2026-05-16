@@ -1,8 +1,11 @@
 import express, { Request, Response } from "express"
+import session from "express-session"
+import { createServer } from "http"
 import { config } from "@/config/env"
 import { createLogger } from "@/lib/logger"
 import { whatsappService } from "@/services/whatsapp.service"
 import { messageHandler } from "@/handlers/message.handler"
+import { wsService } from "@/services/websocket.service"
 
 const logger = createLogger(config.LOG_LEVEL, "Main")
 
@@ -18,6 +21,20 @@ async function main() {
     app.use(express.json())
     app.use(express.urlencoded({ extended: true }))
 
+    // Session middleware for authentication
+    app.use(
+      session({
+        secret: process.env.SESSION_SECRET || "whatsapp-bot-secret-change-in-production",
+        resave: false,
+        saveUninitialized: false,
+        cookie: {
+          maxAge: 24 * 60 * 60 * 1000, // 24 hours
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production", // HTTPS only in production
+        },
+      })
+    )
+
     app.get("/health", (_req: Request, res: Response) => {
       res.json({
         status: "healthy",
@@ -26,15 +43,20 @@ async function main() {
       })
     })
 
-    app.listen(config.PORT, () => {
-      logger.info(`✅ Health server running on port ${config.PORT}`)
+    // Create HTTP server and initialize WebSocket
+    const server = createServer(app)
+    wsService.initialize(server)
+
+    server.listen(config.PORT, () => {
+      logger.info(`✅ Server running on port ${config.PORT}`)
+      wsService.log("success", `Server started on port ${config.PORT}`, "System")
     })
 
     // Admin UI router - load only when available
     try {
       const adminRouter = (await import("./routes/admin.router")).default
-      app.use("/admin", adminRouter)
-      logger.info("✅ Admin UI mounted at /admin")
+      app.use("/", adminRouter)
+      logger.info("✅ Admin UI mounted at /")
     } catch (err) {
       logger.warn("Admin UI router not loaded", err)
     }

@@ -52,5 +52,14 @@ Thumbs.db
 # Testing
 .jest_cache/
 
+# WhatsApp Bot specific
 auth_info_baileys/
 runtime_config.json
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+data/*.db
+data/*.db-shm
+data/*.db-wal

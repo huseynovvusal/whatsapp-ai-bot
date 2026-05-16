@@ -6,6 +6,7 @@ import { createLogger } from "@/lib/logger"
 const logger = createLogger(config.LOG_LEVEL, "RuntimeConfig")
 
 export interface RuntimeConfigSchema {
+  botEnabled?: boolean
   enablePrivateChat?: boolean
   rateLimitMaxRequests?: number
   rateLimitWindowMs?: number
@@ -20,6 +21,7 @@ export interface RuntimeConfigSchema {
   openaiBaseUrl?: string
   respondToGroupMessages?: boolean
   contextualGroupResponses?: boolean
+  accessControlMode?: "disabled" | "whitelist" | "blacklist"
 }
 
 export class RuntimeConfigService {
@@ -31,6 +33,7 @@ export class RuntimeConfigService {
 
     // Default values come from env config
     this.runtimeConfig = {
+      botEnabled: false, // Default to OFF
       enablePrivateChat: true,
       rateLimitMaxRequests: config.RATE_LIMIT_MAX_REQUESTS,
       rateLimitWindowMs: config.RATE_LIMIT_WINDOW_MS,
@@ -44,6 +47,7 @@ export class RuntimeConfigService {
       openaiBaseUrl: process.env.OPENAI_BASE_URL || "",
       respondToGroupMessages: false,
       contextualGroupResponses: false,
+      accessControlMode: config.ACCESS_CONTROL_MODE,
     }
 
     this.loadFromFile()

@@ -188,6 +188,61 @@ Message: ${userText}
       throw new Error("Failed to get response from AI.")
     }
   }
+
+  /**
+   * Analyze an image with vision model
+   */
+  public async analyzeImage(imageBuffer: Buffer, prompt: string, mimeType: string = "image/jpeg"): Promise<string> {
+    try {
+      logger.debug("Analyzing image with vision model")
+
+      if (this.provider === "openai" && this.openai && this.openaiModel) {
+        // Use GPT-4 Vision (need gpt-4-vision-preview or gpt-4o)
+        const base64Image = imageBuffer.toString("base64")
+        const res = await this.openai.chat.completions.create({
+          model: this.openaiModel.includes("vision") || this.openaiModel.includes("4o") ? this.openaiModel : "gpt-4o",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: prompt },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:${mimeType};base64,${base64Image}`
+                  }
+                }
+              ]
+            }
+          ],
+          max_tokens: 500
+        })
+        const answer = res.choices?.[0]?.message?.content || ""
+        logger.info("Image analyzed successfully (OpenAI Vision)")
+        return answer
+      }
+
+      // Gemini Vision
+      if (!this.geminiModel) throw new Error("Gemini model not initialized")
+
+      // Convert buffer to Gemini format
+      const imagePart = {
+        inlineData: {
+          data: imageBuffer.toString("base64"),
+          mimeType
+        }
+      }
+
+      const result = await this.geminiModel.generateContent([prompt, imagePart])
+      const response = await result.response
+      const answer = response.text()
+      logger.info("Image analyzed successfully (Gemini Vision)")
+      return answer
+    } catch (error) {
+      logger.error("Error analyzing image:", error)
+      throw new Error("Failed to analyze image. Please try again.")
+    }
+  }
 }
 
 // Singleton instance

@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  whatsapp-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-ai-bot
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - BOT_NAME=${BOT_NAME:-@bot}
+      - ADMIN_NUMBERS=${ADMIN_NUMBERS}
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-flash}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - MEMORY_WINDOW_MS=${MEMORY_WINDOW_MS:-3600000}
+      - SYSTEM_PROMPT=${SYSTEM_PROMPT:-You are a helpful AI assistant.}
+      - RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS:-2}
+      - RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS:-60000}
+      - ENABLE_PRIVATE_CHAT=${ENABLE_PRIVATE_CHAT:-true}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH}
+      - SESSION_SECRET=${SESSION_SECRET}
+    volumes:
+      # Persist WhatsApp session
+      - ./auth_info_baileys:/app/auth_info_baileys
+      # Persist database
+      - ./data:/app/data
+      # Persist logs
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - whatsapp-bot-network
+
+networks:
+  whatsapp-bot-network:
+    driver: bridge

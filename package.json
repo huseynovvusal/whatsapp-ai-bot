@@ -5,9 +5,15 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon --watch src --exec ts-node -r tsconfig-paths/register src/index.ts | pino-pretty -c",
-    "start": "ts-node src/index.ts",
+    "start": "ts-node -r tsconfig-paths/register src/index.ts",
     "build": "tsc",
-    "prettier": "prettier --write \"src/**/*.ts\" \"public/js/**/*.js\" \"./*.json\""
+    "prettier": "prettier --write \"src/**/*.ts\" \"public/js/**/*.js\" \"./*.json\"",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "docker:build": "docker build -t whatsapp-ai-bot .",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f"
   },
   "keywords": [],
   "author": "",
@@ -17,19 +23,30 @@
     "@google/genai": "^1.31.0",
     "@google/generative-ai": "^0.24.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.10.0",
     "dotenv": "^17.2.3",
     "ejs": "^3.1.9",
     "express": "^5.2.1",
+    "express-session": "^1.19.0",
     "langchain": "^1.1.5",
     "openai": "^6.10.0",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
-    "winston": "^3.18.3"
+    "winston": "^3.18.3",
+    "ws": "^8.20.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
+    "@types/express-session": "^1.19.0",
     "@types/node": "^24.10.1",
+    "@types/qrcode": "^1.5.6",
     "@types/qrcode-terminal": "^0.12.2",
-    "eslint": "^9.39.1",
+    "@types/ws": "^8.18.1",
+    "eslint": "^10.4.0",
     "install": "^0.13.0",
     "nodemon": "^3.1.11",
     "npm": "^11.6.4",
@@ -37,6 +54,7 @@
     "prettier": "^3.7.4",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.59.3"
   }
 }

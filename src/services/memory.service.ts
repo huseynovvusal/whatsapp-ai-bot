@@ -1,5 +1,7 @@
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { whatsappService } from "@/services/whatsapp.service"
+import { userProfileService } from "@/services/userProfile.service"
+import { databaseService } from "@/services/database.service"
 import { cleanPhoneNumber as cleanPhoneFromJid } from "@/utils/phone.utils"
 import { config } from "@/config/env"
 import { createLogger } from "@/lib/logger"
@@ -7,7 +9,8 @@ import { createLogger } from "@/lib/logger"
 const logger = createLogger(config.LOG_LEVEL, "MemoryService")
 
 export interface Message {
-  sender: string
+  sender: string // phone number
+  senderName: string // display name
   text: string
   timestamp: number
 }
@@ -40,19 +43,47 @@ export class MemoryService {
   /**
    * Add a new message scoped to a chat (chatId should be the group JID or private JID)
    */
-  public async addMessage(chatId: string, sender: string, text: string): Promise<void> {
+  public async addMessage(chatId: string, sender: string, text: string, senderName?: string): Promise<void> {
     const displaySender = cleanPhoneFromJid(sender)
-    const message: Message = { sender: displaySender, text, timestamp: Date.now() }
+
+    // Get or use display name
+    const displayName = senderName || userProfileService.getDisplayName(displaySender)
+
+    const message: Message = {
+      sender: displaySender,
+      senderName: displayName,
+      text,
+      timestamp: Date.now()
+    }
     const messages = this.conversations.get(chatId) || []
     messages.push(message)
 
-    // Keep only last `messageLimit` messages
+    // Keep only last `messageLimit` messages in memory
     if (messages.length > this.messageLimit) {
       messages.splice(0, messages.length - this.messageLimit)
       logger.debug(`Pruned old messages for ${chatId} to keep last ${this.messageLimit}`)
     }
 
     this.conversations.set(chatId, messages)
+
+    // Save to database
+    try {
+      databaseService.saveMessage({
+        chatId,
+        sender: displaySender,
+        senderName: displayName,
+        text,
+        messageType: "text",
+        timestamp: message.timestamp
+      })
+
+      // Update analytics
+      const today = new Date().toISOString().split("T")[0]
+      databaseService.updateAnalytics(today, { totalMessages: 1 })
+    } catch (err) {
+      logger.error("Failed to save message to database", err)
+    }
+
     // If chat is group, attempt to read group name for better logging
     let displayChat = chatId
     if (chatId && chatId.endsWith("@g.us")) {
@@ -63,7 +94,7 @@ export class MemoryService {
         // ignore
       }
     }
-    logger.info(`Message added to memory for ${displayChat} from ${displaySender}`)
+    logger.info(`Message added to memory for ${displayChat} from ${displayName} (${displaySender})`)
   }
 
   /**
@@ -75,8 +106,22 @@ export class MemoryService {
     const messages = this.conversations.get(chatId) || []
     if (messages.length === 0) return "No recent messages in context."
 
-    const contextMessages = messages.map((msg) => `${msg.sender}: ${msg.text}`).join("\n")
+    const contextMessages = messages.map((msg) => `${msg.senderName}: ${msg.text}`).join("\n")
     return `Recent conversation:\n${contextMessages}`
+  }
+
+  /**
+   * Get list of participants from messages in this chat (for context)
+   */
+  public getParticipants(chatId: string): Array<{ name: string; phone: string }> {
+    const messages = this.conversations.get(chatId) || []
+    const participantMap = new Map<string, string>() // phone -> name
+
+    for (const msg of messages) {
+      participantMap.set(msg.sender, msg.senderName)
+    }
+
+    return Array.from(participantMap.entries()).map(([phone, name]) => ({ phone, name }))
   }
 
   /**

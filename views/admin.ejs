@@ -1,140 +1,1955 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WhatsApp Bot Admin</title>
-  <link rel="stylesheet" href="/static/css/admin.css" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard - WhatsApp AI Bot</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --primary: #4f46e5;
+      --primary-dark: #4338ca;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-300: #d1d5db;
+      --gray-400: #9ca3af;
+      --gray-500: #6b7280;
+      --gray-600: #4b5563;
+      --gray-700: #374151;
+      --gray-800: #1f2937;
+      --gray-900: #111827;
+      --white: #ffffff;
+      --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+      --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+      --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+      --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--gray-50);
+      color: var(--gray-900);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      background: var(--white);
+      border-bottom: 1px solid var(--gray-200);
+      box-shadow: var(--shadow-sm);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 1rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--gray-900);
+    }
+
+    .logo-icon {
+      font-size: 1.5rem;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    .user-badge {
+      padding: 0.5rem 1rem;
+      background: var(--gray-100);
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      color: var(--gray-700);
+    }
+
+    /* Container */
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+
+    /* Stats Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .stat-card {
+      background: var(--white);
+      padding: 1.5rem;
+      border-radius: 0.75rem;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--gray-200);
+    }
+
+    .stat-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 0.75rem;
+    }
+
+    .stat-title {
+      font-size: 0.875rem;
+      color: var(--gray-600);
+      font-weight: 500;
+    }
+
+    .stat-icon {
+      width: 2.5rem;
+      height: 2.5rem;
+      border-radius: 0.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+    }
+
+    .stat-icon.primary { background: #eef2ff; }
+    .stat-icon.success { background: #f0fdf4; }
+    .stat-icon.warning { background: #fef3c7; }
+    .stat-icon.info { background: #eff6ff; }
+
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--gray-900);
+    }
+
+    .stat-change {
+      font-size: 0.75rem;
+      color: var(--gray-500);
+      margin-top: 0.25rem;
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px solid var(--gray-200);
+      overflow-x: auto;
+    }
+
+    .tab {
+      padding: 0.75rem 1.5rem;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--gray-600);
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .tab:hover {
+      color: var(--gray-900);
+    }
+
+    .tab.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+    }
+
+    /* Tab Content */
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    /* Card */
+    .card {
+      background: var(--white);
+      border-radius: 0.75rem;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--gray-200);
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+      margin-bottom: 1.5rem;
+    }
+
+    .card-title {
+      font-size: 1.125rem;
+      font-weight: 600;
+      color: var(--gray-900);
+      margin-bottom: 0.25rem;
+    }
+
+    .card-subtitle {
+      font-size: 0.875rem;
+      color: var(--gray-500);
+    }
+
+    /* Form */
+    .form-grid {
+      display: grid;
+      gap: 1.5rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1.5rem;
+    }
+
+    label {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--gray-700);
+    }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 0.625rem 0.875rem;
+      border: 1px solid var(--gray-300);
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 100px;
+    }
+
+    .hint {
+      font-size: 0.75rem;
+      color: var(--gray-500);
+    }
+
+    /* Toggle Switch */
+    .toggle-group {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      background: var(--gray-50);
+      border-radius: 0.5rem;
+    }
+
+    .toggle-info {
+      flex: 1;
+    }
+
+    .toggle-label {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--gray-700);
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: var(--gray-300);
+      transition: 0.3s;
+      border-radius: 24px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: 0.3s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: var(--primary);
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 0.625rem 1.25rem;
+      border: none;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: inherit;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-dark);
+    }
+
+    .btn-secondary {
+      background: var(--gray-200);
+      color: var(--gray-700);
+    }
+
+    .btn-secondary:hover {
+      background: var(--gray-300);
+    }
+
+    .btn-danger {
+      background: var(--danger);
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background: #dc2626;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+    }
+
+    /* Table */
+    .table-container {
+      overflow-x: auto;
+      margin-top: 1rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th {
+      text-align: left;
+      padding: 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--gray-600);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--gray-200);
+    }
+
+    td {
+      padding: 1rem 0.75rem;
+      font-size: 0.875rem;
+      color: var(--gray-700);
+      border-bottom: 1px solid var(--gray-100);
+    }
+
+    tr:hover {
+      background: var(--gray-50);
+    }
+
+    /* Badge */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.25rem 0.625rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+
+    .badge-success {
+      background: #d1fae5;
+      color: #065f46;
+    }
+
+    .badge-info {
+      background: #dbeafe;
+      color: #1e40af;
+    }
+
+    /* Alert */
+    .alert {
+      padding: 1rem;
+      border-radius: 0.5rem;
+      margin-bottom: 1rem;
+      display: none;
+    }
+
+    .alert.show {
+      display: block;
+    }
+
+    .alert-success {
+      background: #d1fae5;
+      color: #065f46;
+      border: 1px solid #6ee7b7;
+    }
+
+    .alert-error {
+      background: #fee2e2;
+      color: #991b1b;
+      border: 1px solid #fca5a5;
+    }
+
+    /* Loading */
+    .loading {
+      display: inline-block;
+      width: 1rem;
+      height: 1rem;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: var(--gray-500);
+    }
+
+    .empty-state-icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .container {
+        padding: 1rem;
+      }
+
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .form-row {
+        grid-template-columns: 1fr;
+      }
+
+      .btn-group {
+        flex-direction: column;
+      }
+
+      .btn {
+        width: 100%;
+        justify-content: center;
+      }
+    }
+
+    /* Connection Status Badge */
+    .connection-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+
+    .connection-badge.connected {
+      background: #d1fae5;
+      color: #065f46;
+    }
+
+    .connection-badge.disconnected {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .connection-badge.connected .status-dot {
+      background: #10b981;
+    }
+
+    .connection-badge.disconnected .status-dot {
+      background: #ef4444;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* Logs Container */
+    .logs-container {
+      max-height: 500px;
+      overflow-y: auto;
+      background: var(--gray-900);
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+      font-size: 0.813rem;
+      line-height: 1.5;
+    }
+
+    .log-entry {
+      padding: 0.5rem 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      gap: 0.75rem;
+      color: var(--gray-300);
+    }
+
+    .log-entry:hover {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .log-time {
+      color: var(--gray-500);
+      flex-shrink: 0;
+    }
+
+    .log-source {
+      color: var(--gray-400);
+      flex-shrink: 0;
+      min-width: 100px;
+    }
+
+    .log-message {
+      flex: 1;
+      word-break: break-word;
+    }
+
+    .log-info { border-left: 3px solid #3b82f6; }
+    .log-info .log-message { color: #93c5fd; }
+
+    .log-success { border-left: 3px solid #10b981; }
+    .log-success .log-message { color: #6ee7b7; }
+
+    .log-warn { border-left: 3px solid #f59e0b; }
+    .log-warn .log-message { color: #fbbf24; }
+
+    .log-error { border-left: 3px solid #ef4444; }
+    .log-error .log-message { color: #f87171; }
+
+    .log-debug { border-left: 3px solid #6b7280; }
+    .log-debug .log-message { color: #9ca3af; }
+
+    /* Access Control Lists */
+    .access-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .access-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      background: var(--gray-50);
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+      transition: all 0.2s;
+    }
+
+    .access-item:hover {
+      background: var(--white);
+      border-color: var(--gray-300);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .access-item-info {
+      flex: 1;
+    }
+
+    .access-item-id {
+      font-family: monospace;
+      font-size: 0.875rem;
+      color: var(--gray-900);
+      font-weight: 500;
+    }
+
+    .access-item-meta {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 0.25rem;
+      font-size: 0.813rem;
+      color: var(--gray-600);
+    }
+
+    .access-item-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.125rem 0.5rem;
+      border-radius: 0.25rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+
+    .access-item-badge.contact {
+      background: #dbeafe;
+      color: #1e40af;
+    }
+
+    .access-item-badge.group {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    .btn-remove {
+      padding: 0.5rem 1rem;
+      background: var(--danger);
+      color: var(--white);
+      border: none;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+      transition: all 0.2s;
+    }
+
+    .btn-remove:hover {
+      background: #dc2626;
+    }
+
+    /* Modal */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal.show {
+      display: flex;
+    }
+
+    .modal-content {
+      background: var(--white);
+      border-radius: 0.75rem;
+      box-shadow: var(--shadow-lg);
+      max-width: 500px;
+      width: 90%;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    .modal-header {
+      padding: 1.5rem;
+      border-bottom: 1px solid var(--gray-200);
+    }
+
+    .modal-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--gray-900);
+    }
+
+    .modal-body {
+      padding: 1.5rem;
+    }
+
+    .modal-footer {
+      padding: 1rem 1.5rem;
+      border-top: 1px solid var(--gray-200);
+      display: flex;
+      gap: 0.75rem;
+      justify-content: flex-end;
+    }
+  </style>
 </head>
 <body>
-  <main class="container dark">
-    <header>
-      <div>
-        <h1>WhatsApp Bot — Settings</h1>
-        <p class="subtitle">Minimal, professional configuration panel</p>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-content">
+      <div class="logo">
+        <span class="logo-icon">🤖</span>
+        <h1>WhatsApp AI Bot</h1>
       </div>
-      <div class="header-actions"></div>
-    </header>
+      <div class="header-actions">
+        <div class="user-badge">Admin</div>
+        <button class="btn btn-secondary" onclick="logout()">Logout</button>
+      </div>
+    </div>
+  </header>
 
-    <div class="layout">
-      <form id="settingsForm" class="card" novalidate>
-      <div class="row">
-        <label>Bot Name (Mention)</label>
-        <input type="text" name="botName" id="botName" value="<%= runtime.botName %>" required aria-required="true" />
-        <small class="error" id="err-botName" aria-live="polite"></small>
-      </div>
-
-      <div class="row">
-        <label>Admin Numbers (comma-separated)</label>
-        <input type="text" name="adminNumbers" id="adminNumbers" value="<%= (runtime.adminNumbers || []).join(',') %>" pattern="^[0-9+,\s]*$" placeholder="e.g. 994505347208,145264451047657" />
-        <small class="hint muted">Comma-separated international numbers (digits only)</small>
-        <small class="error" id="err-adminNumbers" aria-live="polite"></small>
-      </div>
-
-      <div class="row">
-        <label>System Prompt</label>
-        <textarea name="systemPrompt" id="systemPrompt" required aria-required="true"><%= runtime.systemPrompt %></textarea>
-        <small class="error" id="err-systemPrompt" aria-live="polite"></small>
-      </div>
-
-      <div class="grid">
-        <div class="row small">
-          <label>Rate Limit (max per window)</label>
-          <input type="number" name="rateLimitMaxRequests" id="rateLimitMaxRequests" value="<%= runtime.rateLimitMaxRequests %>" min="1" required />
-          <small class="error" id="err-rateLimitMaxRequests" aria-live="polite"></small>
-        </div>
-        <div class="row small">
-          <label>Rate Window (ms)</label>
-          <input type="number" name="rateLimitWindowMs" id="rateLimitWindowMs" value="<%= runtime.rateLimitWindowMs %>" min="1000" required />
-          <small class="error" id="err-rateLimitWindowMs" aria-live="polite"></small>
-        </div>
-      </div>
-
-      <div class="row">
-        <label>LLM Provider</label>
-        <select id="llmProvider" name="llmProvider">
-          <option value="gemini" <%= (runtime.llmProvider || 'gemini') === 'gemini' ? 'selected' : '' %>>Gemini</option>
-          <option value="openai" <%= (runtime.llmProvider || 'gemini') === 'openai' ? 'selected' : '' %>>OpenAI (GPT / DeepSeek)</option>
-        </select>
-        <small class="hint muted">Choose which AI provider to use. For DeepSeek, select OpenAI and set Base URL to https://api.deepseek.com.</small>
-      </div>
-
-      <div class="row" id="geminiKeyRow">
-        <label>Gemini API Key</label>
-        <input type="password" name="geminiApiKey" id="geminiApiKey" value="<%= runtime.geminiApiKey || '' %>" autocomplete="new-password" />
-        <small class="hint muted">Stored on server; do not expose publicly</small>
-      </div>
-
-      <div class="grid">
-        <div class="row small" id="openaiKeyRow">
-          <label>OpenAI API Key</label>
-          <input type="password" name="openaiApiKey" id="openaiApiKey" value="<%= runtime.openaiApiKey || '' %>" autocomplete="new-password" />
-        </div>
-        <div class="row small" id="openaiModelRow">
-          <label>OpenAI Model</label>
-          <input type="text" name="openaiModel" id="openaiModel" value="<%= runtime.openaiModel || 'gpt-4o-mini' %>" />
-        </div>
-      </div>
-      <div class="row" id="openaiBaseUrlRow">
-        <label>OpenAI Base URL (optional)</label>
-        <input type="text" name="openaiBaseUrl" id="openaiBaseUrl" value="<%= runtime.openaiBaseUrl || '' %>" placeholder="e.g. https://api.deepseek.com" />
-        <small class="hint muted">Leave empty for OpenAI; use https://api.deepseek.com for DeepSeek.</small>
-      </div>
-
-      <div class="row switch">
-        <div class="left">
-        <label>Enable Private Chat Responses</label>
-            <small class="hint muted">If enabled, the bot will respond to private messages.</small>
-        </div>
-        
-        <div class="toggle-wrapper">
-          <input type="checkbox" id="enablePrivateChat" name="enablePrivateChat" class="toggle-input" <%= runtime.enablePrivateChat ? 'checked' : '' %> />
-          <label for="enablePrivateChat" class="toggle-label" aria-hidden="true"><span class="toggle-knob"></span></label>
-        </div>
-      </div>
-      <div class="group-section">
-        <div class="row switch">
-          <div class="left">
-            <label>Respond to Group Messages</label>
-            <small class="hint muted">If enabled, the bot will respond to group messages even when not directly mentioned.</small>
+  <!-- Main Content -->
+  <div class="container">
+    <!-- Stats Grid -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-header">
+          <div>
+            <div class="stat-title">Total Messages</div>
           </div>
+          <div class="stat-icon primary">💬</div>
+        </div>
+        <div class="stat-value" id="stat-messages">-</div>
+        <div class="stat-change">Database records</div>
+      </div>
 
-          <div class="toggle-wrapper">
-            <input type="checkbox" id="respondToGroupMessages" name="respondToGroupMessages" class="toggle-input" <%= runtime.respondToGroupMessages ? 'checked' : '' %> />
-            <label for="respondToGroupMessages" class="toggle-label" aria-hidden="true"><span class="toggle-knob"></span></label>
+      <div class="stat-card">
+        <div class="stat-header">
+          <div>
+            <div class="stat-title">Total Users</div>
           </div>
+          <div class="stat-icon success">👥</div>
         </div>
-
-        <div class="row switch group-subtle" id="groupContextRow">
-        <div class="left">
-          <label class="sub">Contextual Group Responses</label>
-          <small class="hint muted">When enabled, the bot will use context (and a small LLM judgement) to decide if it should jump into the conversation spontaneously. This only applies when Group Responses are enabled.</small>
-        </div>
-        <div class="toggle-wrapper">
-          <input type="checkbox" id="contextualGroupResponses" name="contextualGroupResponses" class="toggle-input" <%= runtime.contextualGroupResponses ? 'checked' : '' %> />
-          <label for="contextualGroupResponses" class="toggle-label" aria-hidden="true"><span class="toggle-knob"></span></label>
-        </div>
-        </div>
+        <div class="stat-value" id="stat-users">-</div>
+        <div class="stat-change"><span id="stat-active-users">-</span> active today</div>
       </div>
 
-      <div class="actions">
-        <button type="submit" class="btn primary">Save</button>
-        <button type="button" id="resetLocal" class="btn ghost">Reset Local</button>
+      <div class="stat-card">
+        <div class="stat-header">
+          <div>
+            <div class="stat-title">Conversations</div>
+          </div>
+          <div class="stat-icon warning">💭</div>
+        </div>
+        <div class="stat-value" id="stat-conversations">-</div>
+        <div class="stat-change">Active chats</div>
       </div>
 
-      <p id="status" class="status"></p>
-      </form>
-      <section class="card conversations" id="conversations">
-      <h2>Conversations</h2>
-      <p class="subtitle">Active chats and message counts</p>
-      <div id="convoList"></div>
-      <div class="actions" style="margin-top:8px">
-        <button type="button" id="clearAll" class="btn">Clear All Memories</button>
+      <div class="stat-card">
+        <div class="stat-header">
+          <div>
+            <div class="stat-title">Today's Activity</div>
+          </div>
+          <div class="stat-icon info">📊</div>
+        </div>
+        <div class="stat-value" id="stat-today-messages">-</div>
+        <div class="stat-change">Messages today</div>
       </div>
-      </section>
     </div>
 
-  </main>
-  <script src="/static/js/admin.js"></script>
+    <!-- WhatsApp Connection Status Card -->
+    <div class="card" id="whatsapp-status-card" style="margin-top: 1.5rem;">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">WhatsApp Connection & Bot Control</h2>
+          <p class="card-subtitle">Connection status, QR code, and bot controls</p>
+        </div>
+        <div style="display: flex; gap: 0.75rem; align-items: center;">
+          <div id="connection-status-home" class="connection-badge disconnected">
+            <span class="status-dot"></span>
+            <span class="status-text">Disconnected</span>
+          </div>
+        </div>
+      </div>
+      <div class="card-body">
+        <!-- Bot Control Toggle -->
+        <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">Bot Status</h3>
+              <p style="font-size: 0.875rem; color: var(--gray-600);">
+                <span id="bot-status-text">Bot is currently OFF</span>
+              </p>
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+              <button id="btn-start-bot" class="btn btn-primary" onclick="toggleBot(true)" style="display: none;">
+                ▶️ Start Bot
+              </button>
+              <button id="btn-stop-bot" class="btn btn-secondary" onclick="toggleBot(false)" style="display: none;">
+                ⏸️ Stop Bot
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Access Control Mode Selector -->
+        <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+            <div>
+              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">🔒 Access Control</h3>
+              <p style="font-size: 0.875rem; color: var(--gray-600);">
+                <span id="access-mode-text">Current mode: <strong id="access-mode-value">Loading...</strong></span>
+              </p>
+            </div>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <select id="access-control-mode-select" onchange="updateAccessMode()" style="padding: 0.5rem 1rem; border: 2px solid var(--gray-300); border-radius: 0.5rem; font-size: 0.875rem; background: white; color: var(--gray-900); cursor: pointer;">
+                <option value="disabled">🌍 Free Mode (Allow All)</option>
+                <option value="whitelist">✅ Whitelist Only</option>
+                <option value="blacklist">⛔ Block Blacklisted</option>
+              </select>
+              <button class="btn btn-secondary" onclick="switchTab('access')" style="padding: 0.5rem 1rem; font-size: 0.875rem;">
+                ⚙️ Manage Lists
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group Response Mode Selector -->
+        <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+            <div>
+              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">💬 Group Response Mode</h3>
+              <p style="font-size: 0.875rem; color: var(--gray-600);">
+                <span id="group-mode-text">Current mode: <strong id="group-mode-value">Loading...</strong></span>
+              </p>
+            </div>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <select id="group-response-mode-select" onchange="updateGroupResponseMode()" style="padding: 0.5rem 1rem; border: 2px solid var(--gray-300); border-radius: 0.5rem; font-size: 0.875rem; background: white; color: var(--gray-900); cursor: pointer;">
+                <option value="mention-only">🏷️ Only When Tagged</option>
+                <option value="contextual">🤖 Smart/Contextual (AI decides)</option>
+                <option value="all">💬 Reply to All Messages</option>
+              </select>
+            </div>
+          </div>
+          <div style="margin-top: 0.75rem; padding: 0.75rem; background: var(--gray-100); border-radius: 0.375rem; font-size: 0.813rem; color: var(--gray-700);">
+            <strong>Modes:</strong><br>
+            • <strong>Only When Tagged:</strong> Bot responds only when mentioned/tagged in group<br>
+            • <strong>Smart/Contextual:</strong> AI decides when to join conversation naturally<br>
+            • <strong>Reply to All:</strong> Bot responds to every message in group
+          </div>
+        </div>
+
+        <div id="qr-container-home" style="display: none;">
+          <p style="margin-bottom: 1rem; color: var(--gray-600);">Scan this QR code with WhatsApp:</p>
+          <div style="text-align: center; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
+            <img id="qr-image-home" src="" alt="QR Code" style="max-width: 350px; width: 100%;">
+          </div>
+          <p style="margin-top: 1rem; color: var(--gray-500); font-size: 0.875rem; text-align: center;">
+            📲 Open WhatsApp → Settings → Linked Devices → Link a Device
+          </p>
+        </div>
+        <div id="connected-info-home" style="display: none;">
+          <p style="color: var(--success); font-weight: 500; font-size: 0.938rem;">
+            ✅ Connected as: <span id="phone-number-home" style="font-family: monospace;">-</span>
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Alert -->
+    <div class="alert alert-success" id="alert-success"></div>
+    <div class="alert alert-error" id="alert-error"></div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('settings')">⚙️ Settings</button>
+      <button class="tab" onclick="switchTab('access')">🔒 Access Control</button>
+      <button class="tab" onclick="switchTab('conversations')">💬 Conversations</button>
+      <button class="tab" onclick="switchTab('analytics')">📊 Analytics</button>
+      <button class="tab" onclick="switchTab('logs')">📋 Logs</button>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-content active" id="tab-settings">
+      <form id="settingsForm" onsubmit="saveSettings(event)">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Bot Configuration</h2>
+            <p class="card-subtitle">Configure bot name, admin numbers, and rate limiting</p>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Bot Name (Mention Trigger)</label>
+              <input type="text" name="botName" value="<%= runtime.botName %>" required>
+              <span class="hint">Users mention this name to trigger the bot (e.g., @bot)</span>
+            </div>
+
+            <div class="form-group">
+              <label>Admin Phone Numbers</label>
+              <input type="text" name="adminNumbers" value="<%= (runtime.adminNumbers || []).join(',') %>" placeholder="1234567890,9876543210">
+              <span class="hint">Comma-separated, digits only (no + or spaces)</span>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Rate Limit (requests)</label>
+                <input type="number" name="rateLimitMaxRequests" value="<%= runtime.rateLimitMaxRequests %>" min="1" required>
+              </div>
+              <div class="form-group">
+                <label>Rate Window (ms)</label>
+                <input type="number" name="rateLimitWindowMs" value="<%= runtime.rateLimitWindowMs %>" min="1000" required>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">AI Configuration</h2>
+            <p class="card-subtitle">Configure LLM provider, API keys, and system prompt</p>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label>LLM Provider</label>
+              <select name="llmProvider" id="llmProvider" onchange="toggleProvider()">
+                <option value="gemini" <%= (runtime.llmProvider || 'gemini') === 'gemini' ? 'selected' : '' %>>Google Gemini</option>
+                <option value="openai" <%= runtime.llmProvider === 'openai' ? 'selected' : '' %>>OpenAI / DigitalOcean / DeepSeek</option>
+              </select>
+            </div>
+
+            <div id="gemini-config">
+              <div class="form-group">
+                <label>Gemini API Key</label>
+                <input type="password" name="geminiApiKey" value="<%= runtime.geminiApiKey || '' %>" autocomplete="off">
+                <span class="hint">Get from https://ai.google.dev/</span>
+              </div>
+            </div>
+
+            <div id="openai-config" style="display: none;">
+              <div class="form-row">
+                <div class="form-group">
+                  <label>API Key</label>
+                  <input type="password" name="openaiApiKey" value="<%= runtime.openaiApiKey || '' %>" autocomplete="off">
+                </div>
+                <div class="form-group">
+                  <label>Model</label>
+                  <input type="text" name="openaiModel" value="<%= runtime.openaiModel || 'gpt-4o-mini' %>">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Base URL (Optional)</label>
+                <input type="text" name="openaiBaseUrl" value="<%= runtime.openaiBaseUrl || '' %>" placeholder="https://inference.do-ai.run/v1/">
+                <span class="hint">For DigitalOcean: https://inference.do-ai.run/v1/ | DeepSeek: https://api.deepseek.com</span>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>System Prompt</label>
+              <textarea name="systemPrompt" rows="4" required><%= runtime.systemPrompt %></textarea>
+              <span class="hint">Defines the bot's personality and behavior</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Chat Behavior</h2>
+            <p class="card-subtitle">Control how the bot responds in different contexts</p>
+          </div>
+
+          <div class="form-grid">
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Private Chat Responses</label>
+                <span class="hint">Bot responds to all private messages</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="enablePrivateChat" <%= runtime.enablePrivateChat ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Group Message Responses</label>
+                <span class="hint">Bot responds to group messages even without mention</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="respondToGroupMessages" <%= runtime.respondToGroupMessages ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Contextual Group Responses</label>
+                <span class="hint">AI decides when to jump into group conversations</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="contextualGroupResponses" <%= runtime.contextualGroupResponses ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Access Control Mode</label>
+                <select name="accessControlMode">
+                  <option value="disabled" <%= (runtime.accessControlMode || 'disabled') === 'disabled' ? 'selected' : '' %>>Disabled (Allow All)</option>
+                  <option value="whitelist" <%= runtime.accessControlMode === 'whitelist' ? 'selected' : '' %>>Whitelist (Only Allowed)</option>
+                  <option value="blacklist" <%= runtime.accessControlMode === 'blacklist' ? 'selected' : '' %>>Blacklist (Block Specific)</option>
+                </select>
+                <span class="hint">Control which contacts/groups can interact with the bot</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-group">
+          <button type="submit" class="btn btn-primary">
+            <span id="save-text">Save Changes</span>
+            <span id="save-loading" class="loading" style="display: none;"></span>
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="window.location.reload()">Cancel</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Access Control Tab -->
+    <div class="tab-content" id="tab-access">
+      <!-- Whitelist Section -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Whitelist</h2>
+            <p class="card-subtitle">Allow specific contacts or groups to interact with the bot</p>
+          </div>
+          <button type="button" class="btn btn-primary" onclick="showAddToListModal('whitelist')">+ Add to Whitelist</button>
+        </div>
+        <div class="card-body">
+          <div id="whitelist-container">
+            <p style="color: var(--gray-500); text-align: center; padding: 2rem;">Loading...</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Blacklist Section -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Blacklist</h2>
+            <p class="card-subtitle">Block specific contacts or groups from interacting with the bot</p>
+          </div>
+          <button type="button" class="btn btn-secondary" onclick="showAddToListModal('blacklist')">+ Add to Blacklist</button>
+        </div>
+        <div class="card-body">
+          <div id="blacklist-container">
+            <p style="color: var(--gray-500); text-align: center; padding: 2rem;">Loading...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Conversations Tab -->
+    <div class="tab-content" id="tab-conversations">
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Active Conversations</h2>
+          <p class="card-subtitle">View and manage bot conversations</p>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Chat Name</th>
+                <th>Type</th>
+                <th>Chat ID</th>
+                <th>Messages</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="conversations-list">
+              <tr>
+                <td colspan="5">
+                  <div class="empty-state">
+                    <div class="empty-state-icon">📭</div>
+                    <p>No conversations yet</p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="btn-group">
+          <button type="button" class="btn btn-danger" onclick="clearAllMemory()">Clear All Memory</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics Tab -->
+    <div class="tab-content" id="tab-analytics">
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Analytics</h2>
+          <p class="card-subtitle">Usage statistics and insights</p>
+        </div>
+        <div class="empty-state">
+          <div class="empty-state-icon">📊</div>
+          <p>Analytics dashboard coming soon</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logs Tab -->
+    <div class="tab-content" id="tab-logs">
+      <!-- WhatsApp Connection Status -->
+      <div class="card" id="connection-status-card">
+        <div class="card-header">
+          <h2 class="card-title">WhatsApp Connection</h2>
+          <div id="connection-status" class="connection-badge disconnected">
+            <span class="status-dot"></span>
+            <span class="status-text">Disconnected</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div id="qr-container" style="display: none;">
+            <p style="margin-bottom: 1rem; color: var(--gray-600);">Scan this QR code with WhatsApp:</p>
+            <div style="text-align: center; padding: 1rem; background: var(--white); border-radius: 0.5rem;">
+              <img id="qr-image" src="" alt="QR Code" style="max-width: 400px; width: 100%;">
+            </div>
+            <p style="margin-top: 1rem; color: var(--gray-500); font-size: 0.875rem;">
+              📲 Open WhatsApp → Settings → Linked Devices → Link a Device
+            </p>
+          </div>
+          <div id="connected-info" style="display: none;">
+            <p style="color: var(--success); font-weight: 500;">
+              ✅ Connected as: <span id="phone-number">-</span>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Logs -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Live Logs</h2>
+          <div style="display: flex; gap: 0.5rem;">
+            <button type="button" class="btn btn-outline" onclick="clearLogs()">Clear</button>
+            <button type="button" class="btn btn-outline" onclick="toggleAutoScroll()" id="autoscroll-btn">
+              <span id="autoscroll-text">Auto-scroll: ON</span>
+            </button>
+          </div>
+        </div>
+        <div class="card-body" style="padding: 0;">
+          <div id="logs-container" class="logs-container">
+            <div class="log-entry log-info">
+              <span class="log-time">--:--:--</span>
+              <span class="log-source">[System]</span>
+              <span class="log-message">Waiting for logs...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add to List Modal -->
+  <div id="addToListModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-title">Add to List</h3>
+      </div>
+      <div class="modal-body">
+        <form id="addToListForm" onsubmit="submitAddToList(event)">
+          <div class="form-group">
+            <label>Identifier (Phone/Group ID)</label>
+            <input type="text" name="identifier" placeholder="1234567890@s.whatsapp.net" required>
+            <span class="hint">Format: phone@s.whatsapp.net or groupid@g.us</span>
+          </div>
+
+          <div class="form-group">
+            <label>Type</label>
+            <select name="type" required>
+              <option value="contact">Contact</option>
+              <option value="group">Group</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Name (Optional)</label>
+            <input type="text" name="name" placeholder="Display name">
+          </div>
+
+          <div class="form-group" id="reason-group" style="display: none;">
+            <label>Reason (Optional)</label>
+            <textarea name="reason" rows="2" placeholder="Why is this blocked?"></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button type="submit" form="addToListForm" class="btn btn-primary">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Tab switching
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      event.target.classList.add('active');
+      document.getElementById('tab-' + tabName).classList.add('active');
+
+      if (tabName === 'conversations') {
+        loadConversations();
+      } else if (tabName === 'access') {
+        loadAccessLists();
+      }
+    }
+
+    // Load stats
+    async function loadStats() {
+      try {
+        const res = await fetch('/api/stats');
+        const data = await res.json();
+
+        document.getElementById('stat-messages').textContent = data.totalMessages?.toLocaleString() || '0';
+        document.getElementById('stat-users').textContent = data.totalUsers?.toLocaleString() || '0';
+        document.getElementById('stat-active-users').textContent = data.activeUsers?.toLocaleString() || '0';
+        document.getElementById('stat-conversations').textContent = data.totalConversations?.toLocaleString() || '0';
+        document.getElementById('stat-today-messages').textContent = data.today?.totalMessages?.toLocaleString() || '0';
+      } catch (err) {
+        console.error('Failed to load stats:', err);
+      }
+    }
+
+    // Load conversations
+    async function loadConversations() {
+      try {
+        const res = await fetch('/api/conversations');
+        const data = await res.json();
+        const tbody = document.getElementById('conversations-list');
+
+        if (!data.conversations || data.conversations.length === 0) {
+          tbody.innerHTML = `
+            <tr><td colspan="5">
+              <div class="empty-state">
+                <div class="empty-state-icon">📭</div>
+                <p>No conversations yet</p>
+              </div>
+            </td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = data.conversations.map(c => {
+          const isGroup = c.id.includes('@g.us');
+          const chatType = isGroup ? 'group' : 'contact';
+          return `
+          <tr>
+            <td><strong>${c.name || '(Unknown)'}</strong></td>
+            <td><span class="badge ${isGroup ? 'badge-info' : 'badge-success'}">${isGroup ? 'Group' : 'Contact'}</span></td>
+            <td>
+              <code style="font-size: 0.75rem; background: var(--gray-100); padding: 0.25rem 0.5rem; border-radius: 0.25rem; user-select: all;">${c.id}</code>
+              <button class="btn btn-secondary btn-sm" onclick="copyToClipboard('${c.id}')" style="margin-left: 0.5rem; padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Copy ID">
+                📋 Copy
+              </button>
+            </td>
+            <td>${c.count}</td>
+            <td>
+              <div style="display: flex; gap: 0.5rem;">
+                <button class="btn btn-primary btn-sm" onclick="quickAddToWhitelist('${c.id}', '${chatType}', '${(c.name || '').replace(/'/g, "\\'")}')">
+                  ➕ Whitelist
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="clearChat('${c.id}')">
+                  🗑️ Clear
+                </button>
+              </div>
+            </td>
+          </tr>
+        `}).join('');
+      } catch (err) {
+        console.error('Failed to load conversations:', err);
+      }
+    }
+
+    // Toggle provider
+    function toggleProvider() {
+      const provider = document.getElementById('llmProvider').value;
+      document.getElementById('gemini-config').style.display = provider === 'gemini' ? 'block' : 'none';
+      document.getElementById('openai-config').style.display = provider === 'openai' ? 'block' : 'none';
+    }
+
+    // Save settings
+    async function saveSettings(e) {
+      e.preventDefault();
+      const form = e.target;
+      const formData = new FormData(form);
+      const data = Object.fromEntries(formData);
+
+      // Convert checkboxes
+      ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses'].forEach(key => {
+        data[key] = formData.has(key);
+      });
+
+      document.getElementById('save-text').style.display = 'none';
+      document.getElementById('save-loading').style.display = 'inline-block';
+
+      try {
+        const res = await fetch('/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showAlert('success', 'Settings saved successfully!');
+          setTimeout(() => window.location.reload(), 1000);
+        } else {
+          showAlert('error', 'Failed to save settings');
+        }
+      } catch (err) {
+        showAlert('error', 'Error: ' + err.message);
+      } finally {
+        document.getElementById('save-text').style.display = 'inline';
+        document.getElementById('save-loading').style.display = 'none';
+      }
+    }
+
+    // Clear chat
+    async function clearChat(chatId) {
+      if (!confirm('Clear memory for this chat?')) return;
+
+      try {
+        const res = await fetch('/clear', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatId })
+        });
+
+        if (res.ok) {
+          showAlert('success', 'Chat memory cleared');
+          loadConversations();
+        }
+      } catch (err) {
+        showAlert('error', 'Failed to clear chat');
+      }
+    }
+
+    // Clear all memory
+    async function clearAllMemory() {
+      if (!confirm('Clear ALL conversation memory? This cannot be undone!')) return;
+
+      try {
+        const res = await fetch('/clear', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatId: 'all' })
+        });
+
+        if (res.ok) {
+          showAlert('success', 'All memory cleared');
+          loadConversations();
+          loadStats();
+        }
+      } catch (err) {
+        showAlert('error', 'Failed to clear memory');
+      }
+    }
+
+    // Copy to clipboard
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        showAlert('success', `Copied: ${text}`);
+      }).catch(err => {
+        console.error('Failed to copy:', err);
+        showAlert('error', 'Failed to copy to clipboard');
+      });
+    }
+
+    // Quick add to whitelist from conversations
+    async function quickAddToWhitelist(identifier, type, name) {
+      try {
+        const res = await fetch('/api/whitelist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifier, type, name })
+        });
+
+        if (res.ok) {
+          showAlert('success', `Added "${name || identifier}" to whitelist`);
+          loadWhitelist();
+        } else {
+          const data = await res.json();
+          showAlert('error', data.error || 'Failed to add to whitelist');
+        }
+      } catch (err) {
+        console.error('Failed to add to whitelist:', err);
+        showAlert('error', 'Failed to add to whitelist');
+      }
+    }
+
+    // Logout
+    async function logout() {
+      const res = await fetch('/logout', { method: 'POST' });
+      if (res.ok) {
+        window.location.href = '/login';
+      }
+    }
+
+    // Show alert
+    function showAlert(type, message) {
+      const alert = document.getElementById('alert-' + type);
+      alert.textContent = message;
+      alert.classList.add('show');
+      setTimeout(() => alert.classList.remove('show'), 5000);
+    }
+
+    // WebSocket for real-time logs
+    let ws = null;
+    let autoScroll = true;
+    const maxLogs = 500; // Keep last 500 logs
+
+    function connectWebSocket() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+        addLog('success', 'WebSocket connected', 'System');
+      };
+
+      ws.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+
+        if (message.type === 'log') {
+          const log = message.data;
+          addLog(log.level, log.message, log.source);
+        } else if (message.type === 'qr') {
+          const qrData = message.data;
+          showQRCode(qrData.qr);
+          showQRCodeHome(qrData.qr);
+        } else if (message.type === 'connection') {
+          const status = message.data;
+          updateConnectionStatus(status.connected, status.phoneNumber);
+          updateConnectionStatusHome(status.connected, status.phoneNumber);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        addLog('error', 'WebSocket connection error', 'System');
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected, reconnecting in 5s...');
+        addLog('warn', 'WebSocket disconnected, reconnecting...', 'System');
+        setTimeout(connectWebSocket, 5000);
+      };
+    }
+
+    function addLog(level, message, source) {
+      const logsContainer = document.getElementById('logs-container');
+
+      // Remove "Waiting for logs..." message
+      if (logsContainer.children.length === 1 && logsContainer.children[0].querySelector('.log-time')?.textContent === '--:--:--') {
+        logsContainer.innerHTML = '';
+      }
+
+      // Create log entry
+      const logEntry = document.createElement('div');
+      logEntry.className = `log-entry log-${level}`;
+
+      const time = new Date().toLocaleTimeString();
+      const sourceText = source ? `[${source}]` : '';
+
+      logEntry.innerHTML = `
+        <span class="log-time">${time}</span>
+        <span class="log-source">${sourceText}</span>
+        <span class="log-message">${escapeHtml(message)}</span>
+      `;
+
+      logsContainer.appendChild(logEntry);
+
+      // Limit number of logs
+      while (logsContainer.children.length > maxLogs) {
+        logsContainer.removeChild(logsContainer.firstChild);
+      }
+
+      // Auto scroll to bottom
+      if (autoScroll) {
+        logsContainer.scrollTop = logsContainer.scrollHeight;
+      }
+    }
+
+    function showQRCode(qrImage) {
+      document.getElementById('qr-image').src = qrImage;
+      document.getElementById('qr-container').style.display = 'block';
+      document.getElementById('connected-info').style.display = 'none';
+    }
+
+    function updateConnectionStatus(connected, phoneNumber) {
+      const statusBadge = document.getElementById('connection-status');
+      const statusText = statusBadge.querySelector('.status-text');
+
+      if (connected) {
+        statusBadge.className = 'connection-badge connected';
+        statusText.textContent = 'Connected';
+        document.getElementById('qr-container').style.display = 'none';
+        document.getElementById('connected-info').style.display = 'block';
+        if (phoneNumber) {
+          document.getElementById('phone-number').textContent = phoneNumber;
+        }
+      } else {
+        statusBadge.className = 'connection-badge disconnected';
+        statusText.textContent = 'Disconnected';
+        document.getElementById('qr-container').style.display = 'none';
+        document.getElementById('connected-info').style.display = 'none';
+      }
+    }
+
+    function clearLogs() {
+      const logsContainer = document.getElementById('logs-container');
+      logsContainer.innerHTML = `
+        <div class="log-entry log-info">
+          <span class="log-time">--:--:--</span>
+          <span class="log-source">[System]</span>
+          <span class="log-message">Logs cleared</span>
+        </div>
+      `;
+    }
+
+    function toggleAutoScroll() {
+      autoScroll = !autoScroll;
+      document.getElementById('autoscroll-text').textContent = `Auto-scroll: ${autoScroll ? 'ON' : 'OFF'}`;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Access Control Functions
+    let currentListType = '';
+
+    async function loadAccessLists() {
+      await loadWhitelist();
+      await loadBlacklist();
+    }
+
+    async function loadWhitelist() {
+      try {
+        const res = await fetch('/api/whitelist');
+        const data = await res.json();
+        const container = document.getElementById('whitelist-container');
+
+        if (!data.whitelist || data.whitelist.length === 0) {
+          container.innerHTML = '<p style="color: var(--gray-500); text-align: center; padding: 2rem;">No whitelist entries</p>';
+          return;
+        }
+
+        container.innerHTML = '<div class="access-list">' +
+          data.whitelist.map(item => `
+            <div class="access-item">
+              <div class="access-item-info">
+                <div class="access-item-id">${escapeHtml(item.identifier)}</div>
+                <div class="access-item-meta">
+                  <span class="access-item-badge ${item.type}">${item.type}</span>
+                  ${item.name ? `<span>${escapeHtml(item.name)}</span>` : ''}
+                  <span>${new Date(item.createdAt).toLocaleDateString()}</span>
+                </div>
+              </div>
+              <button class="btn-remove" onclick="removeFromWhitelist('${escapeHtml(item.identifier)}')">Remove</button>
+            </div>
+          `).join('') +
+        '</div>';
+      } catch (err) {
+        console.error('Failed to load whitelist:', err);
+      }
+    }
+
+    async function loadBlacklist() {
+      try {
+        const res = await fetch('/api/blacklist');
+        const data = await res.json();
+        const container = document.getElementById('blacklist-container');
+
+        if (!data.blacklist || data.blacklist.length === 0) {
+          container.innerHTML = '<p style="color: var(--gray-500); text-align: center; padding: 2rem;">No blacklist entries</p>';
+          return;
+        }
+
+        container.innerHTML = '<div class="access-list">' +
+          data.blacklist.map(item => `
+            <div class="access-item">
+              <div class="access-item-info">
+                <div class="access-item-id">${escapeHtml(item.identifier)}</div>
+                <div class="access-item-meta">
+                  <span class="access-item-badge ${item.type}">${item.type}</span>
+                  ${item.name ? `<span>${escapeHtml(item.name)}</span>` : ''}
+                  ${item.reason ? `<span>• ${escapeHtml(item.reason)}</span>` : ''}
+                  <span>${new Date(item.createdAt).toLocaleDateString()}</span>
+                </div>
+              </div>
+              <button class="btn-remove" onclick="removeFromBlacklist('${escapeHtml(item.identifier)}')">Remove</button>
+            </div>
+          `).join('') +
+        '</div>';
+      } catch (err) {
+        console.error('Failed to load blacklist:', err);
+      }
+    }
+
+    function showAddToListModal(listType) {
+      currentListType = listType;
+      const modal = document.getElementById('addToListModal');
+      const title = document.getElementById('modal-title');
+      const reasonGroup = document.getElementById('reason-group');
+
+      title.textContent = listType === 'whitelist' ? 'Add to Whitelist' : 'Add to Blacklist';
+      reasonGroup.style.display = listType === 'blacklist' ? 'block' : 'none';
+
+      document.getElementById('addToListForm').reset();
+      modal.classList.add('show');
+    }
+
+    function closeModal() {
+      document.getElementById('addToListModal').classList.remove('show');
+    }
+
+    async function submitAddToList(event) {
+      event.preventDefault();
+      const form = event.target;
+      const formData = new FormData(form);
+
+      const data = {
+        identifier: formData.get('identifier'),
+        type: formData.get('type'),
+        name: formData.get('name'),
+        reason: formData.get('reason')
+      };
+
+      try {
+        const endpoint = currentListType === 'whitelist' ? '/api/whitelist' : '/api/blacklist';
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          closeModal();
+          loadAccessLists();
+          showAlert('success', `Added to ${currentListType} successfully`);
+        } else {
+          showAlert('error', `Failed to add to ${currentListType}`);
+        }
+      } catch (err) {
+        console.error('Error:', err);
+        showAlert('error', `Failed to add to ${currentListType}`);
+      }
+    }
+
+    async function removeFromWhitelist(identifier) {
+      if (!confirm(`Remove ${identifier} from whitelist?`)) return;
+
+      try {
+        const res = await fetch(`/api/whitelist/${encodeURIComponent(identifier)}`, {
+          method: 'DELETE'
+        });
+
+        if (res.ok) {
+          loadWhitelist();
+          showAlert('success', 'Removed from whitelist');
+        } else {
+          showAlert('error', 'Failed to remove from whitelist');
+        }
+      } catch (err) {
+        console.error('Error:', err);
+        showAlert('error', 'Failed to remove from whitelist');
+      }
+    }
+
+    async function removeFromBlacklist(identifier) {
+      if (!confirm(`Remove ${identifier} from blacklist?`)) return;
+
+      try {
+        const res = await fetch(`/api/blacklist/${encodeURIComponent(identifier)}`, {
+          method: 'DELETE'
+        });
+
+        if (res.ok) {
+          loadBlacklist();
+          showAlert('success', 'Removed from blacklist');
+        } else {
+          showAlert('error', 'Failed to remove from blacklist');
+        }
+      } catch (err) {
+        console.error('Error:', err);
+        showAlert('error', 'Failed to remove from blacklist');
+      }
+    }
+
+    // Update connection status for home screen too
+    function updateConnectionStatusHome(connected, phoneNumber) {
+      const statusBadge = document.getElementById('connection-status-home');
+      const statusText = statusBadge.querySelector('.status-text');
+
+      if (connected) {
+        statusBadge.className = 'connection-badge connected';
+        statusText.textContent = 'Connected';
+        document.getElementById('qr-container-home').style.display = 'none';
+        document.getElementById('connected-info-home').style.display = 'block';
+        if (phoneNumber) {
+          document.getElementById('phone-number-home').textContent = phoneNumber;
+        }
+      } else {
+        statusBadge.className = 'connection-badge disconnected';
+        statusText.textContent = 'Disconnected';
+        document.getElementById('connected-info-home').style.display = 'none';
+      }
+    }
+
+    function showQRCodeHome(qrImage) {
+      document.getElementById('qr-image-home').src = qrImage;
+      document.getElementById('qr-container-home').style.display = 'block';
+      document.getElementById('connected-info-home').style.display = 'none';
+    }
+
+    // Bot Control Functions
+    async function loadBotStatus() {
+      try {
+        const res = await fetch('/api/bot/status');
+        const data = await res.json();
+        updateBotStatusUI(data.enabled);
+      } catch (err) {
+        console.error('Failed to load bot status:', err);
+      }
+    }
+
+    function updateBotStatusUI(enabled) {
+      const statusText = document.getElementById('bot-status-text');
+      const startBtn = document.getElementById('btn-start-bot');
+      const stopBtn = document.getElementById('btn-stop-bot');
+
+      if (enabled) {
+        statusText.textContent = '✅ Bot is currently ON (processing messages)';
+        statusText.style.color = 'var(--success)';
+        startBtn.style.display = 'none';
+        stopBtn.style.display = 'inline-flex';
+      } else {
+        statusText.textContent = '⏸️ Bot is currently OFF (not processing messages)';
+        statusText.style.color = 'var(--danger)';
+        startBtn.style.display = 'inline-flex';
+        stopBtn.style.display = 'none';
+      }
+    }
+
+    async function toggleBot(enable) {
+      try {
+        const res = await fetch('/api/bot/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: enable })
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.success) {
+          updateBotStatusUI(data.enabled);
+          showAlert('success', `Bot ${data.enabled ? 'started' : 'stopped'} successfully`);
+        } else {
+          showAlert('error', 'Failed to toggle bot status');
+        }
+      } catch (err) {
+        console.error('Failed to toggle bot:', err);
+        showAlert('error', 'Failed to toggle bot status');
+      }
+    }
+
+    // Access Control Mode Functions
+    async function loadAccessControlMode() {
+      try {
+        const res = await fetch('/api');
+        const data = await res.json();
+        const mode = data.accessControlMode || 'disabled';
+        updateAccessControlModeUI(mode);
+      } catch (err) {
+        console.error('Failed to load access control mode:', err);
+      }
+    }
+
+    function updateAccessControlModeUI(mode) {
+      const select = document.getElementById('access-control-mode-select');
+      const valueSpan = document.getElementById('access-mode-value');
+
+      select.value = mode;
+
+      const modeLabels = {
+        'disabled': '🌍 Free Mode (Everyone can use)',
+        'whitelist': '✅ Whitelist Only (Restricted)',
+        'blacklist': '⛔ Blocking Blacklisted'
+      };
+
+      valueSpan.textContent = modeLabels[mode] || mode;
+      valueSpan.style.color = mode === 'disabled' ? 'var(--success)' : mode === 'whitelist' ? 'var(--warning)' : 'var(--danger)';
+    }
+
+    async function updateAccessMode() {
+      const select = document.getElementById('access-control-mode-select');
+      const mode = select.value;
+
+      try {
+        const res = await fetch('/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accessControlMode: mode })
+        });
+
+        const data = await res.json();
+        if (res.ok && data.success) {
+          updateAccessControlModeUI(mode);
+          showAlert('success', `Access control mode changed to: ${mode}`);
+        } else {
+          showAlert('error', 'Failed to update access control mode');
+        }
+      } catch (err) {
+        console.error('Failed to update access control mode:', err);
+        showAlert('error', 'Failed to update access control mode');
+      }
+    }
+
+    // Group Response Mode Functions
+    async function loadGroupResponseMode() {
+      try {
+        const res = await fetch('/api');
+        const data = await res.json();
+        const respondToGroups = data.respondToGroupMessages || false;
+        const contextual = data.contextualGroupResponses || false;
+
+        let mode = 'mention-only';
+        if (respondToGroups) {
+          mode = contextual ? 'contextual' : 'all';
+        }
+
+        updateGroupResponseModeUI(mode);
+      } catch (err) {
+        console.error('Failed to load group response mode:', err);
+      }
+    }
+
+    function updateGroupResponseModeUI(mode) {
+      const select = document.getElementById('group-response-mode-select');
+      const valueSpan = document.getElementById('group-mode-value');
+
+      select.value = mode;
+
+      const modeLabels = {
+        'mention-only': '🏷️ Only When Tagged',
+        'contextual': '🤖 Smart/Contextual',
+        'all': '💬 Reply to All'
+      };
+
+      valueSpan.textContent = modeLabels[mode] || mode;
+      valueSpan.style.color = mode === 'mention-only' ? 'var(--primary)' : mode === 'contextual' ? 'var(--success)' : 'var(--warning)';
+    }
+
+    async function updateGroupResponseMode() {
+      const select = document.getElementById('group-response-mode-select');
+      const mode = select.value;
+
+      let respondToGroupMessages = false;
+      let contextualGroupResponses = false;
+
+      if (mode === 'contextual') {
+        respondToGroupMessages = true;
+        contextualGroupResponses = true;
+      } else if (mode === 'all') {
+        respondToGroupMessages = true;
+        contextualGroupResponses = false;
+      }
+      // mention-only: both false
+
+      try {
+        const res = await fetch('/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            respondToGroupMessages,
+            contextualGroupResponses
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok && data.success) {
+          updateGroupResponseModeUI(mode);
+          showAlert('success', `Group response mode changed to: ${mode}`);
+        } else {
+          showAlert('error', 'Failed to update group response mode');
+        }
+      } catch (err) {
+        console.error('Failed to update group response mode:', err);
+        showAlert('error', 'Failed to update group response mode');
+      }
+    }
+
+    // Initialize
+    toggleProvider();
+    loadStats();
+    loadBotStatus();
+    loadAccessControlMode();
+    loadGroupResponseMode();
+    setInterval(loadStats, 30000); // Refresh every 30s
+    connectWebSocket(); // Connect to WebSocket for real-time logs
+  </script>
 </body>
 </html>

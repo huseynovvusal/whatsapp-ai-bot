@@ -11,15 +11,18 @@ import { Boom } from "@hapi/boom"
 import { config } from "@/config/env"
 import { createLogger } from "@/lib/logger"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
+import { userProfileService } from "@/services/userProfile.service"
+import { databaseService } from "@/services/database.service"
 import { cleanPhoneNumber as cleanPhoneFromJid, baseFromJid } from "@/utils/phone.utils"
+import { wsService } from "@/services/websocket.service"
 import path from "path"
-import qrcode from "qrcode-terminal"
 
 const logger = createLogger(config.LOG_LEVEL, "WhatsAppService")
 
 export interface MessageInfo {
   from: string
   sender: string
+  senderName?: string
   groupName?: string
   text: string
   isGroup: boolean
@@ -65,24 +68,25 @@ export class WhatsAppService {
       const { connection, lastDisconnect, qr } = update
 
       if (qr) {
-        console.log("\n" + "=".repeat(60))
-        console.log("📱 SCAN THIS QR CODE WITH YOUR WHATSAPP")
-        console.log("=".repeat(60) + "\n")
-        qrcode.generate(qr, { small: true })
-        console.log("\n" + "=".repeat(60))
-        console.log("📲 Open WhatsApp → Settings → Linked Devices → Link a Device")
-        console.log("=".repeat(60) + "\n")
-        logger.info("QR Code generated. Scan with WhatsApp to connect.")
+        // Send QR code to admin panel via WebSocket
+        wsService.sendQRCode(qr).catch((err) => {
+          logger.error("Failed to send QR code to WebSocket", err)
+        })
+        wsService.log("info", "QR Code generated. Scan with WhatsApp to connect.", "WhatsApp")
       }
 
       if (connection === "close") {
         const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut
 
+        const reason = lastDisconnect?.error?.message || "unknown"
+        wsService.log("warn", `Connection closed. Reason: ${reason}`, "WhatsApp")
+        wsService.sendConnectionStatus(false)
+
         logger.warn("Connection closed. Reconnecting:", {
           shouldReconnect,
           statusCode,
-          reason: lastDisconnect?.error?.message || "unknown",
+          reason,
         })
 
         if (shouldReconnect) {
@@ -91,20 +95,28 @@ export class WhatsAppService {
             return
           }
           this.reconnecting = true
+          wsService.log("info", `Reconnecting in ${this.reconnectDelayMs / 1000} seconds...`, "WhatsApp")
           setTimeout(async () => {
             this.reconnecting = false
             try {
               await this.connect()
             } catch (err) {
               logger.error("Reconnect attempt failed:", err)
+              wsService.log("error", `Reconnect attempt failed: ${err}`, "WhatsApp")
             }
           }, this.reconnectDelayMs)
         }
       } else if (connection === "open") {
         this.reconnecting = false
+        const phoneNumber = this.sock?.user?.id || undefined
+        const displayName = this.sock?.user?.name || phoneNumber
+
         logger.info("✅ WhatsApp connection established successfully!")
+        wsService.log("success", `WhatsApp connected as: ${displayName}`, "WhatsApp")
+        wsService.sendConnectionStatus(true, phoneNumber)
+
         if (this.sock?.user) {
-          logger.info(`📱 Connected as: ${this.sock.user.name || this.sock.user.id}`)
+          logger.info(`📱 Connected as: ${displayName}`)
         }
       }
     })
@@ -135,6 +147,33 @@ export class WhatsAppService {
   }
 
   /**
+   * Get all groups the bot is participating in
+   */
+  public async getAllGroups(): Promise<Array<{ id: string; name: string; participantCount: number }>> {
+    if (!this.sock) return []
+    try {
+      // @ts-ignore - groupFetchAllParticipating is available in Baileys
+      const groups = await this.sock.groupFetchAllParticipating?.()
+      if (!groups) return []
+
+      const groupList: Array<{ id: string; name: string; participantCount: number }> = []
+      for (const [id, group] of Object.entries(groups as any)) {
+        const groupData = group as any
+        groupList.push({
+          id,
+          name: groupData.subject || "(No name)",
+          participantCount: groupData.participants?.length || 0,
+        })
+      }
+
+      return groupList
+    } catch (err) {
+      logger.warn("Failed to fetch all groups", err)
+      return []
+    }
+  }
+
+  /**
    * Get richer group info: subject + owner + participant count
    */
   public async getGroupInfo(
@@ -157,6 +196,64 @@ export class WhatsAppService {
   }
 
   /**
+   * Get group participants with their profile information
+   */
+  public async getGroupParticipants(
+    groupJid: string
+  ): Promise<Array<{ id: string; phone: string; name?: string; isAdmin: boolean }>> {
+    if (!this.sock) return []
+    try {
+      // @ts-ignore
+      const meta = await (this.sock.groupMetadata?.(groupJid) || Promise.resolve(undefined))
+      if (!meta || !meta.participants) return []
+
+      const participants = meta.participants.map((p: any) => {
+        const phone = cleanPhoneFromJid(p.id)
+        return {
+          id: p.id,
+          phone,
+          name: undefined, // WhatsApp doesn't provide names in group metadata
+          isAdmin: p.admin === "admin" || p.admin === "superadmin",
+        }
+      })
+
+      return participants
+    } catch (err) {
+      logger.warn("Failed to fetch group participants", err)
+      return []
+    }
+  }
+
+  /**
+   * Fetch contact name from WhatsApp (if available)
+   */
+  public async getContactName(jid: string): Promise<string | undefined> {
+    if (!this.sock) return undefined
+    try {
+      // Try to get from contact store first (Baileys caches contacts)
+      // @ts-ignore - contact store may not be in types
+      const contacts = this.sock.store?.contacts
+      if (contacts && contacts[jid]) {
+        // @ts-ignore
+        return contacts[jid]?.name || contacts[jid]?.notify || contacts[jid]?.verifiedName
+      }
+
+      // Try onWhatsApp to check if number is registered and get notify name
+      // @ts-ignore - Baileys may have contact store
+      const result = await this.sock.onWhatsApp?.(jid)
+      if (result && result.length > 0) {
+        // @ts-ignore - notify property may not be typed correctly
+        return result[0]?.notify || undefined
+      }
+
+      return undefined
+    } catch (err) {
+      logger.debug("Failed to fetch contact name", err)
+      return undefined
+    }
+  }
+
+  /**
    * Set message handler callback
    */
   public onMessage(handler: MessageHandler): void {
@@ -164,16 +261,61 @@ export class WhatsAppService {
   }
 
   /**
-   * Send message to a chat
+   * Send presence update (typing, recording, etc.)
    */
-  public async sendMessage(to: string, text: string): Promise<void> {
+  public async sendPresenceUpdate(presence: "unavailable" | "available" | "composing" | "recording" | "paused", to: string): Promise<void> {
     if (!this.sock) {
       throw new Error("WhatsApp is not connected")
     }
 
     try {
-      await this.sock.sendMessage(to, { text })
-      logger.info(`Message sent to ${to}`)
+      await this.sock.sendPresenceUpdate(presence, to)
+      logger.debug(`Presence update sent: ${presence} to ${to}`)
+    } catch (error) {
+      logger.error("Error sending presence update:", error)
+    }
+  }
+
+  /**
+   * React to a message with an emoji
+   */
+  public async sendReaction(to: string, messageKey: any, emoji: string): Promise<void> {
+    if (!this.sock) {
+      throw new Error("WhatsApp is not connected")
+    }
+
+    try {
+      const reactionMessage = {
+        react: {
+          text: emoji,
+          key: messageKey
+        }
+      }
+      await this.sock.sendMessage(to, reactionMessage)
+      logger.debug(`Reaction sent: ${emoji} to message in ${to}`)
+    } catch (error) {
+      logger.error("Error sending reaction:", error)
+    }
+  }
+
+  /**
+   * Send message to a chat
+   */
+  public async sendMessage(to: string, text: string, mentionedJids?: string[]): Promise<void> {
+    if (!this.sock) {
+      throw new Error("WhatsApp is not connected")
+    }
+
+    try {
+      const messageOptions: any = { text }
+
+      // Add mentions if provided
+      if (mentionedJids && mentionedJids.length > 0) {
+        messageOptions.mentions = mentionedJids
+      }
+
+      await this.sock.sendMessage(to, messageOptions)
+      logger.info(`Message sent to ${to}${mentionedJids ? ` with ${mentionedJids.length} mentions` : ""}`)
     } catch (error) {
       logger.error("Error sending message:", error)
       throw new Error("Failed to send message")
@@ -186,19 +328,27 @@ export class WhatsAppService {
   public async sendReply(
     to: string,
     text: string,
-    quotedMessage: proto.IWebMessageInfo
+    quotedMessage: proto.IWebMessageInfo,
+    mentionedJids?: string[]
   ): Promise<void> {
     if (!this.sock) {
       throw new Error("WhatsApp is not connected")
     }
 
     try {
+      const messageOptions: any = { text }
+
+      // Add mentions if provided
+      if (mentionedJids && mentionedJids.length > 0) {
+        messageOptions.mentions = mentionedJids
+      }
+
       await this.sock.sendMessage(
         to,
-        { text },
+        messageOptions,
         { quoted: quotedMessage as any } // Type assertion needed for Baileys compatibility
       )
-      logger.info(`Reply sent to ${to}`)
+      logger.info(`Reply sent to ${to}${mentionedJids ? ` with ${mentionedJids.length} mentions` : ""}`)
     } catch (error) {
       logger.error("Error sending reply:", error)
       throw new Error("Failed to send reply")
@@ -229,16 +379,25 @@ export class WhatsAppService {
       const isGroup = isJidGroup(from)
       const sender = isGroup ? msg.key.participant || from : from
 
+      // Extract sender name from message (pushName is WhatsApp display name)
+      const pushName = msg.pushName || undefined
+      const cleanedSenderPhone = cleanPhoneFromJid(sender)
+
+      // Update user profile with push name
+      if (pushName) {
+        userProfileService.updateProfile(cleanedSenderPhone, undefined, pushName)
+      }
+
       // Check if bot is mentioned in group
       const isMentioned = this.isBotMentioned(text, msg)
 
       // Check if message is a reply to bot's message
       const isReplyToBot = this.isReplyToBot(msg)
 
-      const cleanedSenderPhone = cleanPhoneFromJid(sender)
       const messageInfo: MessageInfo = {
         from,
         sender: cleanedSenderPhone,
+        senderName: userProfileService.getDisplayName(cleanedSenderPhone),
         text: text.trim(),
         isGroup: isGroup || false,
         isMentioned,
@@ -252,22 +411,48 @@ export class WhatsAppService {
         try {
           const name = await this.getGroupName(from)
           if (name) messageInfo.groupName = name
+
+          // Update conversation in database
+          databaseService.upsertConversation({
+            chatId: from,
+            chatName: name,
+            isGroup: true,
+            messageCount: 0,
+            lastMessageAt: Date.now()
+          })
         } catch (err) {
           logger.warn("Failed to fetch group name:", err)
+        }
+      } else {
+        // Update private chat conversation
+        try {
+          databaseService.upsertConversation({
+            chatId: from,
+            chatName: messageInfo.senderName,
+            isGroup: false,
+            messageCount: 0,
+            lastMessageAt: Date.now()
+          })
+        } catch (err) {
+          logger.warn("Failed to update conversation:", err)
         }
       }
 
       // Log message with group label if present
       if (messageInfo.isGroup) {
+        const logMsg = `Message in group '${messageInfo.groupName || "(unknown)"}' from ${messageInfo.senderName || messageInfo.sender}`
         logger.info(
-          `📨 Message in group '${messageInfo.groupName || "(unknown)"}' from ${messageInfo.sender} (participant: ${
+          `📨 ${logMsg} (participant: ${
             (msg.key as any).participant || "-"
           }, chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${text.substring(0, 50)}...`
         )
+        wsService.log("info", `${logMsg}: ${text.substring(0, 100)}`, "Message")
       } else {
+        const logMsg = `Message from ${messageInfo.senderName || messageInfo.sender}`
         logger.info(
-          `📨 Message from ${messageInfo.sender} (chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${text.substring(0, 50)}...`
+          `📨 ${logMsg} (chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${text.substring(0, 50)}...`
         )
+        wsService.log("info", `${logMsg}: ${text.substring(0, 100)}`, "Message")
       }
 
       // Call message handler
@@ -301,12 +486,35 @@ export class WhatsAppService {
     const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
     const botNumber = this.sock?.user?.id
     let mentionedByJid = false
+
     if (botNumber && mentionedJids && mentionedJids.length) {
-      // Normalize to base JID for comparison
+      // Get bot's base number (994708770718)
       const botBase = baseFromJid(botNumber)
-      mentionedByJid = mentionedJids.some((j) => baseFromJid(j) === botBase || j === botNumber)
+
+      // Check each mentioned JID
+      mentionedByJid = mentionedJids.some((j) => {
+        const mentionedBase = baseFromJid(j)
+
+        // Direct match on full JID or base JID
+        if (j === botNumber || mentionedBase === botBase) {
+          return true
+        }
+
+        // Check if mentioned JID contains @lid (Linked Identity Device)
+        // WhatsApp uses LID for linked devices, format: 217248673337520:22@lid
+        // We need to check if this LID belongs to the bot
+        if (j.includes("@lid")) {
+          logger.debug(`LID mentioned: ${j}, Bot number: ${botNumber}`)
+          // For now, accept ANY @lid mention as a mention of the bot
+          // (This is a simplified approach - ideally we'd map LID to main number)
+          return true
+        }
+
+        return false
+      })
     }
 
+    logger.debug(`Mention check - Text: ${mentionedInText}, JID: ${mentionedByJid}, Mentioned JIDs: ${JSON.stringify(mentionedJids)}`)
     return mentionedInText || mentionedByJid
   }
 

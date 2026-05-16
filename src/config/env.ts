@@ -3,11 +3,9 @@ import path from "path"
 
 const NODE_ENV = process.env.NODE_ENV || "development"
 
-console.log(path.join(__dirname, `../.env${NODE_ENV === "development" ? ".development" : ""}`))
-
+// Load .env file from project root
 dotenv.config({
-  quiet: true,
-  path: path.join(__dirname, `../../.env${NODE_ENV === "development" ? ".development" : ""}`),
+  path: path.join(__dirname, "../../.env"),
 })
 
 export class Config {
@@ -31,6 +29,9 @@ export class Config {
   public SYSTEM_PROMPT: string
   // Private chat control
   public ENABLE_PRIVATE_CHAT: boolean
+
+  // Access Control
+  public ACCESS_CONTROL_MODE: "disabled" | "whitelist" | "blacklist"
 
   // Rate Limiting Config
   public RATE_LIMIT_MAX_REQUESTS: number
@@ -65,6 +66,8 @@ export class Config {
     this.RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60000 // 1 minute
     // Private chat: enabled by default
     this.ENABLE_PRIVATE_CHAT = process.env.ENABLE_PRIVATE_CHAT !== "false"
+    // Access Control: disabled by default
+    this.ACCESS_CONTROL_MODE = (process.env.ACCESS_CONTROL_MODE as "disabled" | "whitelist" | "blacklist") || "disabled"
 
     // Validate LLM credentials
     // if (this.LLM_PROVIDER === "openai" && !this.OPENAI_API_KEY) {
