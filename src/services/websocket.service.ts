@@ -79,6 +79,19 @@ export class WebSocketService {
     this.log("success", "WebSocket server initialized on /ws", "WebSocket")
   }
 
+  /**
+   * Stream a log entry to connected admin clients only (no console output).
+   * Used by the winston transport bridge so all application logs appear in the
+   * admin Logs tab without duplicating console output.
+   */
+  public pushLog(level: LogLevel, message: string, source?: string): void {
+    if (this.clients.size === 0) return
+    this.broadcast({
+      type: "log",
+      data: { level, message, timestamp: Date.now(), source } as LogMessage,
+    })
+  }
+
   public log(level: LogLevel, message: string, source?: string): void {
     const logMessage: LogMessage = {
       level,

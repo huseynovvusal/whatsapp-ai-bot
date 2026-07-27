@@ -302,9 +302,8 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
           await whatsappService.sendMessage(info.from, "❌ Usage: !system <new system prompt>")
           return
         }
+        // setSystemPrompt persists to runtime config and applies immediately
         memoryService.setSystemPrompt(args)
-        // Persist to runtime config so it survives restarts
-        runtimeConfig.set("systemPrompt", args)
         await whatsappService.sendMessage(info.from, `✅ System prompt updated:\n"${args}"`)
         break
 

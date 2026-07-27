@@ -185,7 +185,9 @@ router.post("/save", (req: Request, res: Response) => {
           .split(",")
           .map((s) => s.trim())
       )
-    if ("systemPrompt" in body) runtimeConfig.set("systemPrompt", String(body.systemPrompt))
+    // Apply the system prompt through memoryService so it takes effect immediately
+    // (memoryService.setSystemPrompt also persists it to runtime config).
+    if ("systemPrompt" in body) memoryService.setSystemPrompt(String(body.systemPrompt))
     if ("geminiApiKey" in body) runtimeConfig.set("geminiApiKey", String(body.geminiApiKey))
     if ("llmProvider" in body) runtimeConfig.set("llmProvider", String(body.llmProvider) as any)
     if ("openaiApiKey" in body) runtimeConfig.set("openaiApiKey", String(body.openaiApiKey))

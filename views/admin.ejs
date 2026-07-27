@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin Dashboard - WhatsApp AI Bot</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
   <style>
     * {
       margin: 0;
@@ -606,6 +607,58 @@
     .log-debug { border-left: 3px solid #6b7280; }
     .log-debug .log-message { color: #9ca3af; }
 
+    .log-empty {
+      color: var(--gray-500);
+      justify-content: center;
+      padding: 2rem 1rem;
+    }
+    .log-empty .log-message { color: var(--gray-500); }
+
+    /* Logs header + toolbar */
+    .logs-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+
+    .logs-toolbar {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .logs-input {
+      width: auto;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.813rem;
+      border: 1px solid var(--gray-300);
+      border-radius: 0.5rem;
+      background: var(--white);
+    }
+
+    #log-search { min-width: 180px; }
+
+    .btn-sm {
+      padding: 0.375rem 0.75rem;
+      font-size: 0.75rem;
+    }
+
+    .btn-outline {
+      background: var(--white);
+      color: var(--gray-700);
+      border: 1px solid var(--gray-300);
+    }
+
+    .btn-outline:hover {
+      background: var(--gray-50);
+    }
+
+    .log-hidden { display: none !important; }
+
     /* Access Control Lists */
     .access-list {
       display: flex;
@@ -990,7 +1043,7 @@
             <div class="form-group">
               <label>System Prompt</label>
               <textarea name="systemPrompt" rows="4" required><%= runtime.systemPrompt %></textarea>
-              <span class="hint">Defines the bot's personality and behavior</span>
+              <span class="hint">Defines the bot's personality and behavior. Changes apply immediately to new messages — no restart required.</span>
             </div>
           </div>
         </div>
@@ -1177,21 +1230,32 @@
 
       <!-- Live Logs -->
       <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">Live Logs</h2>
-          <div style="display: flex; gap: 0.5rem;">
-            <button type="button" class="btn btn-outline" onclick="clearLogs()">Clear</button>
-            <button type="button" class="btn btn-outline" onclick="toggleAutoScroll()" id="autoscroll-btn">
+        <div class="card-header logs-header">
+          <div>
+            <h2 class="card-title">Live Logs</h2>
+            <p class="card-subtitle"><span id="log-count">0</span> entries · streaming in real time</p>
+          </div>
+          <div class="logs-toolbar">
+            <input type="search" id="log-search" class="logs-input" placeholder="Filter messages…" oninput="applyLogFilters()" aria-label="Filter log messages">
+            <select id="log-level-filter" class="logs-input" onchange="applyLogFilters()" aria-label="Filter by log level">
+              <option value="all">All levels</option>
+              <option value="info">Info</option>
+              <option value="success">Success</option>
+              <option value="warn">Warn</option>
+              <option value="error">Error</option>
+              <option value="debug">Debug</option>
+            </select>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAutoScroll()" id="autoscroll-btn">
               <span id="autoscroll-text">Auto-scroll: ON</span>
             </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="downloadLogs()">Download</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="clearLogs()">Clear</button>
           </div>
         </div>
         <div class="card-body" style="padding: 0;">
           <div id="logs-container" class="logs-container">
-            <div class="log-entry log-info">
-              <span class="log-time">--:--:--</span>
-              <span class="log-source">[System]</span>
-              <span class="log-message">Waiting for logs...</span>
+            <div class="log-entry log-empty">
+              <span class="log-message">Waiting for logs…</span>
             </div>
           </div>
         </div>
@@ -1240,12 +1304,18 @@
   </div>
 
   <script>
-    // Tab switching
+    // Tab switching (robust: does not rely on the global `event` object, so it
+    // works when invoked programmatically e.g. from the "Manage Lists" button)
     function switchTab(tabName) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      event.target.classList.add('active');
-      document.getElementById('tab-' + tabName).classList.add('active');
+
+      const content = document.getElementById('tab-' + tabName);
+      if (content) content.classList.add('active');
+
+      const btn = Array.from(document.querySelectorAll('.tabs .tab'))
+        .find(t => (t.getAttribute('onclick') || '').includes("switchTab('" + tabName + "')"));
+      if (btn) btn.classList.add('active');
 
       if (tabName === 'conversations') {
         loadConversations();
@@ -1496,26 +1566,52 @@
       };
     }
 
+    function updateLogCount() {
+      const el = document.getElementById('log-count');
+      if (el) el.textContent = String(document.querySelectorAll('#logs-container .log-entry:not(.log-empty)').length);
+    }
+
+    function matchesLogFilters(entry) {
+      const levelFilter = (document.getElementById('log-level-filter') || {}).value || 'all';
+      const search = ((document.getElementById('log-search') || {}).value || '').toLowerCase().trim();
+      const level = entry.getAttribute('data-level') || '';
+      const text = (entry.getAttribute('data-text') || '').toLowerCase();
+      if (levelFilter !== 'all' && level !== levelFilter) return false;
+      if (search && !text.includes(search)) return false;
+      return true;
+    }
+
+    function applyLogFilters() {
+      document.querySelectorAll('#logs-container .log-entry:not(.log-empty)').forEach(entry => {
+        entry.classList.toggle('log-hidden', !matchesLogFilters(entry));
+      });
+    }
+
     function addLog(level, message, source) {
       const logsContainer = document.getElementById('logs-container');
 
-      // Remove "Waiting for logs..." message
-      if (logsContainer.children.length === 1 && logsContainer.children[0].querySelector('.log-time')?.textContent === '--:--:--') {
-        logsContainer.innerHTML = '';
-      }
-
-      // Create log entry
-      const logEntry = document.createElement('div');
-      logEntry.className = `log-entry log-${level}`;
+      // Remove placeholder ("Waiting for logs…") message
+      const placeholder = logsContainer.querySelector('.log-empty');
+      if (placeholder) placeholder.remove();
 
       const time = new Date().toLocaleTimeString();
       const sourceText = source ? `[${source}]` : '';
 
+      // Create log entry
+      const logEntry = document.createElement('div');
+      logEntry.className = `log-entry log-${level}`;
+      logEntry.setAttribute('data-level', level);
+      logEntry.setAttribute('data-text', `${sourceText} ${message}`);
+      logEntry.setAttribute('data-time', time);
+
       logEntry.innerHTML = `
         <span class="log-time">${time}</span>
-        <span class="log-source">${sourceText}</span>
+        <span class="log-source">${escapeHtml(sourceText)}</span>
         <span class="log-message">${escapeHtml(message)}</span>
       `;
+
+      // Apply current filters immediately so hidden entries stay hidden
+      if (!matchesLogFilters(logEntry)) logEntry.classList.add('log-hidden');
 
       logsContainer.appendChild(logEntry);
 
@@ -1524,10 +1620,32 @@
         logsContainer.removeChild(logsContainer.firstChild);
       }
 
+      updateLogCount();
+
       // Auto scroll to bottom
       if (autoScroll) {
         logsContainer.scrollTop = logsContainer.scrollHeight;
       }
+    }
+
+    function downloadLogs() {
+      const entries = Array.from(document.querySelectorAll('#logs-container .log-entry:not(.log-empty)'));
+      if (!entries.length) { showAlert('error', 'No logs to download'); return; }
+      const lines = entries.map(e => {
+        const time = e.getAttribute('data-time') || '';
+        const level = (e.getAttribute('data-level') || '').toUpperCase();
+        const text = e.getAttribute('data-text') || '';
+        return `${time} [${level}] ${text}`.trim();
+      });
+      const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `whatsapp-bot-logs-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     }
 
     function showQRCode(qrImage) {
@@ -1559,12 +1677,11 @@
     function clearLogs() {
       const logsContainer = document.getElementById('logs-container');
       logsContainer.innerHTML = `
-        <div class="log-entry log-info">
-          <span class="log-time">--:--:--</span>
-          <span class="log-source">[System]</span>
-          <span class="log-message">Logs cleared</span>
+        <div class="log-entry log-empty">
+          <span class="log-message">Logs cleared — waiting for new entries…</span>
         </div>
       `;
+      updateLogCount();
     }
 
     function toggleAutoScroll() {

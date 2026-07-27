@@ -157,17 +157,26 @@ export class MemoryService {
   }
 
   /**
-   * Update system prompt
+   * Update system prompt.
+   * Persists to runtime config so the change is applied immediately (used by the
+   * next LLM call) and survives restarts.
    */
   public setSystemPrompt(prompt: string): void {
     this.systemPrompt = prompt
+    runtimeConfig.set("systemPrompt", prompt)
     logger.info("System prompt updated")
   }
 
   /**
-   * Get current system prompt
+   * Get current system prompt.
+   * Always reads the runtime config first so updates made via the admin UI or the
+   * `!system` command take effect immediately without a restart.
    */
   public getSystemPrompt(): string {
+    const fromConfig = runtimeConfig.get("systemPrompt") as string | undefined
+    if (typeof fromConfig === "string" && fromConfig.trim().length > 0) {
+      return fromConfig
+    }
     return this.systemPrompt
   }
 

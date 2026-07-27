@@ -76,6 +76,8 @@ All major services are singleton instances created at module level:
 
 **Mention/Tagging**: Bot can tag users in responses using `@Name` format. The `parseMentions()` utility (`src/utils/mention.utils.ts`) converts AI-generated @Name mentions to WhatsApp's native mention format with JIDs. Participant list is passed to LLM in context so it knows who it can mention.
 
+**System Prompt (applied immediately)**: `runtimeConfig` is the single source of truth for the system prompt. `memoryService.getSystemPrompt()` reads it from runtime config on every call, and `memoryService.setSystemPrompt()` persists it there. Both the admin UI (`/save`) and the `!system` command go through `setSystemPrompt`, so prompt changes take effect on the very next LLM call without a restart.
+
 **Admin Commands**: Defined in `src/handlers/message.handler.ts:205`, validated via `AdminUtils.isAdmin()` checking against `ADMIN_NUMBERS` config
 
 **Session Persistence**: WhatsApp auth stored in `auth_info_baileys/` directory, QR code only needed on first run
@@ -150,7 +152,12 @@ Available at `http://localhost:3000/admin/login` when bot is running. Mounted vi
 - **Conversations Tab**: View recent conversations and search messages
 - **Analytics Tab**: Usage statistics (coming soon)
 - **Logs Tab**: Real-time logs viewer with WebSocket streaming
-  - Live log streaming from all services
+  - Live log streaming from all services. Every winston log (`logger.*`) is bridged
+    to the admin panel via a custom transport in `src/lib/logger.ts`
+    (`WebSocketTransport` → `wsService.pushLog()`), so the tab reflects real activity
+    instead of only manually-instrumented messages. INFO and above are streamed to
+    keep the view readable; DEBUG stays in the console/file logs.
+  - Client-side controls: level filter, message search, entry count, download logs
   - QR code display for WhatsApp connection
   - Connection status indicator (connected/disconnected)
   - Auto-scroll toggle and clear logs buttons
@@ -226,7 +233,7 @@ npm run lint
 npm run lint:fix
 ```
 
-ESLint configured with TypeScript rules in `eslint.config.js`
+ESLint configured with TypeScript rules in `eslint.config.mjs` (uses ESM `import`, so the `.mjs` extension is required because `package.json` sets `"type": "commonjs"`)
 
 ### Prettier
 
