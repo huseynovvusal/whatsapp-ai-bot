@@ -345,6 +345,102 @@ export class DatabaseService {
     return stmt.get(today) as DbAnalytics | undefined
   }
 
+  /**
+   * Most active senders within a time window. The bot's own messages are excluded
+   * so the ranking reflects real people.
+   */
+  public getTopUsers(
+    since: number,
+    limit: number = 8
+  ): Array<{ sender: string; senderName: string; count: number }> {
+    const stmt = this.db.prepare(`
+      SELECT sender, senderName, COUNT(*) as count
+      FROM messages
+      WHERE timestamp >= ? AND sender != 'Bot'
+      GROUP BY sender
+      ORDER BY count DESC
+      LIMIT ?
+    `)
+    return stmt.all(since, limit) as Array<{
+      sender: string
+      senderName: string
+      count: number
+    }>
+  }
+
+  /**
+   * Busiest chats within a time window, resolved to a display name where known.
+   */
+  public getTopConversations(
+    since: number,
+    limit: number = 8
+  ): Array<{ chatId: string; chatName: string | null; isGroup: boolean; count: number }> {
+    const stmt = this.db.prepare(`
+      SELECT m.chatId as chatId, c.chatName as chatName, COUNT(*) as count
+      FROM messages m
+      LEFT JOIN conversations c ON c.chatId = m.chatId
+      WHERE m.timestamp >= ?
+      GROUP BY m.chatId
+      ORDER BY count DESC
+      LIMIT ?
+    `)
+    const rows = stmt.all(since, limit) as Array<{
+      chatId: string
+      chatName: string | null
+      count: number
+    }>
+    return rows.map((r) => ({ ...r, isGroup: r.chatId.endsWith("@g.us") }))
+  }
+
+  /**
+   * Message volume by hour of day (0-23, server local time). Always returns all
+   * 24 buckets so the chart has a stable x-axis even for sparse data.
+   */
+  public getHourlyActivity(since: number): Array<{ hour: number; count: number }> {
+    const stmt = this.db.prepare(`
+      SELECT CAST(strftime('%H', timestamp / 1000, 'unixepoch', 'localtime') AS INTEGER) as hour,
+             COUNT(*) as count
+      FROM messages
+      WHERE timestamp >= ?
+      GROUP BY hour
+    `)
+    const rows = stmt.all(since) as Array<{ hour: number; count: number }>
+    const buckets = new Map(rows.map((r) => [r.hour, r.count]))
+    return Array.from({ length: 24 }, (_, hour) => ({ hour, count: buckets.get(hour) || 0 }))
+  }
+
+  /**
+   * Headline totals for a window, computed from the messages table so they always
+   * agree with the per-chat and per-user breakdowns.
+   */
+  public getRangeTotals(
+    since: number,
+    until: number = Date.now()
+  ): { messages: number; botMessages: number; activeUsers: number; activeChats: number } {
+    const row = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) as messages,
+           SUM(CASE WHEN sender = 'Bot' THEN 1 ELSE 0 END) as botMessages,
+           COUNT(DISTINCT CASE WHEN sender != 'Bot' THEN sender END) as activeUsers,
+           COUNT(DISTINCT chatId) as activeChats
+         FROM messages
+         WHERE timestamp >= ? AND timestamp <= ?`
+      )
+      .get(since, until) as {
+      messages: number | null
+      botMessages: number | null
+      activeUsers: number | null
+      activeChats: number | null
+    }
+    return {
+      messages: row.messages || 0,
+      botMessages: row.botMessages || 0,
+      activeUsers: row.activeUsers || 0,
+      activeChats: row.activeChats || 0,
+    }
+  }
+
   // ============= ACCESS CONTROL OPERATIONS =============
 
   public addToWhitelist(identifier: string, type: "contact" | "group", name?: string, addedBy?: string): void {
@@ -396,6 +492,15 @@ export class DatabaseService {
   }
 
   // ============= UTILITY OPERATIONS =============
+
+  /**
+   * Raw database handle, for maintenance tooling only (e.g. the fixtures script in
+   * `scripts/seed.ts`). Application code should use the typed methods above so that
+   * schema knowledge stays in this service.
+   */
+  public getRawDb(): Database.Database {
+    return this.db
+  }
 
   public close(): void {
     this.db.close()

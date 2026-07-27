@@ -118,15 +118,60 @@ router.get("/api/stats", (_req: Request, res: Response) => {
   }
 })
 
-// Get analytics data
+// Get analytics data.
+// Returns everything the Analytics tab renders, scoped to a single time window so
+// every chart, stat and table on the page agrees with the others.
 router.get("/api/analytics", (req: Request, res: Response) => {
   try {
-    const days = Number(req.query.days) || 7
-    const endDate = new Date().toISOString().split("T")[0]
-    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+    const requestedDays = Number(req.query.days)
+    const days = [7, 30, 90].includes(requestedDays) ? requestedDays : 7
 
-    const analytics = databaseService.getAnalytics(startDate, endDate)
-    res.json({ analytics })
+    const dayMs = 24 * 60 * 60 * 1000
+    const now = Date.now()
+    // Start at midnight `days - 1` days ago so a "7 days" range covers 7 calendar days
+    // including today, which is what the day-by-day series shows.
+    const start = new Date(now - (days - 1) * dayMs)
+    start.setHours(0, 0, 0, 0)
+    const since = start.getTime()
+    // Equal-length preceding window, used for the stat-tile deltas.
+    const prevSince = since - days * dayMs
+
+    const toDate = (ms: number) => new Date(ms).toISOString().split("T")[0]
+    const rows = databaseService.getAnalytics(toDate(since), toDate(now))
+    const byDate = new Map(rows.map((r) => [r.date, r]))
+
+    // Emit one point per day (zero-filled) so gaps in activity read as gaps
+    // rather than silently collapsing the x-axis.
+    const series = Array.from({ length: days }, (_, i) => {
+      const date = toDate(since + i * dayMs)
+      const row = byDate.get(date)
+      return {
+        date,
+        totalMessages: row?.totalMessages || 0,
+        apiCalls: row?.apiCalls || 0,
+        tokensUsed: row?.tokensUsed || 0,
+      }
+    })
+
+    const totals = databaseService.getRangeTotals(since, now)
+    const previous = databaseService.getRangeTotals(prevSince, since - 1)
+
+    res.json({
+      days,
+      range: { since, until: now },
+      series,
+      totals: {
+        ...totals,
+        apiCalls: series.reduce((sum, d) => sum + d.apiCalls, 0),
+        tokensUsed: series.reduce((sum, d) => sum + d.tokensUsed, 0),
+      },
+      previous,
+      topUsers: databaseService.getTopUsers(since, 8),
+      topChats: databaseService.getTopConversations(since, 8),
+      hourly: databaseService.getHourlyActivity(since),
+      // Retained for backwards compatibility with any existing consumer.
+      analytics: rows,
+    })
   } catch (err) {
     logger.error("Failed to get analytics", err)
     res.status(500).json({ error: "Failed to get analytics" })

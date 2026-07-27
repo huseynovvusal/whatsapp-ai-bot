@@ -7,6 +7,7 @@
     "dev": "nodemon --watch src --exec ts-node -r tsconfig-paths/register src/index.ts | pino-pretty -c",
     "start": "ts-node -r tsconfig-paths/register src/index.ts",
     "build": "tsc",
+    "seed": "ts-node -r tsconfig-paths/register scripts/seed.ts",
     "prettier": "prettier --write \"src/**/*.ts\" \"public/js/**/*.js\" \"./*.json\"",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",

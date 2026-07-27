@@ -659,6 +659,219 @@
 
     .log-hidden { display: none !important; }
 
+    /* ---------------------------------------------------------------
+       Analytics charts
+
+       Chart roles are declared once here so a future dark mode is a
+       single-block swap. The series hue (#4f46e5, the app's brand
+       indigo) is validated against the white card surface: it clears
+       the lightness band, chroma floor and 3:1 contrast gates.
+       Every chart plots ONE series, so colour never carries identity.
+       --------------------------------------------------------------- */
+    :root {
+      --chart-surface: var(--white);
+      --chart-series-1: #4f46e5;
+      --chart-grid: var(--gray-200);
+      --chart-axis-text: var(--gray-500);
+      --chart-ink: var(--gray-900);
+      --chart-ink-secondary: var(--gray-600);
+      --chart-delta-up: #006300;
+      --chart-delta-down: #d03b3b;
+    }
+
+    /* Filter row — scopes everything below it */
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+
+    .filter-label {
+      font-size: 0.813rem;
+      font-weight: 600;
+      color: var(--gray-600);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .range-group {
+      display: inline-flex;
+      background: var(--gray-100);
+      border-radius: 0.5rem;
+      padding: 0.25rem;
+      gap: 0.25rem;
+    }
+
+    .range-btn {
+      padding: 0.375rem 0.875rem;
+      border: none;
+      background: transparent;
+      border-radius: 0.375rem;
+      font-size: 0.813rem;
+      font-weight: 500;
+      color: var(--gray-600);
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+
+    .range-btn:hover { color: var(--gray-900); }
+
+    .range-btn.active {
+      background: var(--white);
+      color: var(--primary);
+      box-shadow: var(--shadow-sm);
+    }
+
+    #analytics-content { transition: opacity 0.15s; }
+    /* Refetch holds the previous render — no skeleton, no layout jump */
+    #analytics-content.is-loading { opacity: 0.5; }
+
+    .chart-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .chart-grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .chart-host {
+      position: relative;
+      width: 100%;
+      overflow: visible;
+    }
+
+    .chart-svg { display: block; width: 100%; overflow: visible; }
+
+    /* Marks: thin, with the data as the only loud thing */
+    .chart-line {
+      fill: none;
+      stroke: var(--chart-series-1);
+      stroke-width: 2;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+    }
+
+    .chart-area { fill: var(--chart-series-1); opacity: 0.1; }
+
+    .chart-bar { fill: var(--chart-series-1); transition: opacity 0.12s; }
+    .chart-bar.is-hover { opacity: 0.78; }
+
+    .chart-dot {
+      fill: var(--chart-series-1);
+      /* 2px surface ring keeps the marker legible where it crosses the line */
+      stroke: var(--chart-surface);
+      stroke-width: 2;
+    }
+
+    .chart-dot-hover {
+      fill: var(--chart-series-1);
+      stroke: var(--chart-surface);
+      stroke-width: 2;
+      pointer-events: none;
+    }
+
+    /* Chrome recedes: solid hairlines, never dashed */
+    .chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
+
+    .chart-crosshair {
+      stroke: var(--gray-400);
+      stroke-width: 1;
+      pointer-events: none;
+    }
+
+    /* Text wears text tokens, never the series colour */
+    .chart-axis-label {
+      fill: var(--chart-axis-text);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chart-row-label { fill: var(--chart-ink-secondary); font-size: 12px; }
+
+    .chart-value-label {
+      fill: var(--chart-ink);
+      font-size: 12px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chart-hit, .chart-overlay { cursor: crosshair; }
+    .chart-overlay:focus { outline: none; }
+    .chart-overlay:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+    /* Tooltip: value leads, label follows */
+    .chart-tooltip {
+      position: absolute;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.12s;
+      background: var(--gray-900);
+      color: var(--white);
+      border-radius: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.75rem;
+      white-space: nowrap;
+      z-index: 20;
+      box-shadow: var(--shadow-md);
+    }
+
+    .chart-tooltip.visible { opacity: 1; }
+
+    .chart-tooltip-title {
+      color: var(--gray-400);
+      margin-bottom: 0.25rem;
+      font-size: 0.688rem;
+    }
+
+    .chart-tooltip-row { display: flex; align-items: center; gap: 0.375rem; }
+
+    /* A short stroke keys the series — a filled box would be data-weight ink */
+    .chart-tooltip-key {
+      width: 10px;
+      height: 2px;
+      background: var(--chart-series-1);
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+
+    .chart-tooltip-value { font-variant-numeric: tabular-nums; }
+    .chart-tooltip-label { color: var(--gray-400); }
+
+    .chart-empty { text-align: center; padding: 3rem 1rem; color: var(--gray-500); }
+    .chart-empty-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+
+    /* Table view — the WCAG-clean twin of every chart */
+    .chart-table { width: 100%; border-collapse: collapse; }
+    .chart-table th {
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.688rem;
+      color: var(--gray-600);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--gray-200);
+    }
+    .chart-table td {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.813rem;
+      color: var(--gray-700);
+      border-bottom: 1px solid var(--gray-100);
+    }
+    .chart-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .delta-up { color: var(--chart-delta-up); font-weight: 600; }
+    .delta-down { color: var(--chart-delta-down); font-weight: 600; }
+    .delta-flat { color: var(--gray-500); font-weight: 600; }
+
     /* Access Control Lists */
     .access-list {
       display: flex;
@@ -1187,14 +1400,65 @@
 
     <!-- Analytics Tab -->
     <div class="tab-content" id="tab-analytics">
-      <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">Analytics</h2>
-          <p class="card-subtitle">Usage statistics and insights</p>
+      <!-- Filter row: one row, above everything it scopes -->
+      <div class="filter-row">
+        <span class="filter-label">Range</span>
+        <div class="range-group" role="group" aria-label="Select time range">
+          <button type="button" class="range-btn active" data-range="7" aria-pressed="true">Last 7 days</button>
+          <button type="button" class="range-btn" data-range="30" aria-pressed="false">Last 30 days</button>
+          <button type="button" class="range-btn" data-range="90" aria-pressed="false">Last 90 days</button>
         </div>
-        <div class="empty-state">
-          <div class="empty-state-icon">📊</div>
-          <p>Analytics dashboard coming soon</p>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="refreshAnalytics()">Refresh</button>
+      </div>
+
+      <div id="analytics-content">
+        <!-- KPI row -->
+        <div class="stats-grid" id="analytics-stats"></div>
+
+        <div class="card">
+          <div class="card-header chart-card-header">
+            <div>
+              <h2 class="card-title">Messages per day</h2>
+              <p class="card-subtitle">Total messages recorded each day in the selected range</p>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" data-table-toggle="timeseries" aria-pressed="false">Table view</button>
+          </div>
+          <div class="chart-host" id="chart-timeseries"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header chart-card-header">
+            <div>
+              <h2 class="card-title">Activity by hour</h2>
+              <p class="card-subtitle">When messages arrive, aggregated across the range (server local time)</p>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" data-table-toggle="hourly" aria-pressed="false">Table view</button>
+          </div>
+          <div class="chart-host" id="chart-hourly"></div>
+        </div>
+
+        <div class="chart-grid-2">
+          <div class="card">
+            <div class="card-header chart-card-header">
+              <div>
+                <h2 class="card-title">Most active people</h2>
+                <p class="card-subtitle">Excludes the bot's own replies</p>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" data-table-toggle="users" aria-pressed="false">Table view</button>
+            </div>
+            <div class="chart-host" id="chart-top-users"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header chart-card-header">
+              <div>
+                <h2 class="card-title">Busiest chats</h2>
+                <p class="card-subtitle">Groups and private chats by message volume</p>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" data-table-toggle="chats" aria-pressed="false">Table view</button>
+            </div>
+            <div class="chart-host" id="chart-top-chats"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1321,6 +1585,9 @@
         loadConversations();
       } else if (tabName === 'access') {
         loadAccessLists();
+      } else if (tabName === 'analytics') {
+        // Charts need a measurable width, so they render on first reveal
+        if (typeof initAnalyticsTab === 'function') initAnalyticsTab();
       }
     }
 
@@ -2068,5 +2335,6 @@
     setInterval(loadStats, 30000); // Refresh every 30s
     connectWebSocket(); // Connect to WebSocket for real-time logs
   </script>
+  <script src="/static/js/analytics.js"></script>
 </body>
 </html>

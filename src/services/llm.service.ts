@@ -2,9 +2,23 @@ import { GoogleGenerativeAI } from "@google/generative-ai"
 import OpenAI from "openai"
 import { config } from "@/config/env"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
+import { databaseService } from "@/services/database.service"
 import { createLogger } from "@/lib/logger"
 
 const logger = createLogger(config.LOG_LEVEL, "LLMService")
+
+/**
+ * Record a single LLM API call (and its token usage, when the provider reports it)
+ * against today's analytics row. Failures here must never break a reply.
+ */
+function recordUsage(tokensUsed: number = 0): void {
+  try {
+    const today = new Date().toISOString().split("T")[0]
+    databaseService.updateAnalytics(today, { apiCalls: 1, tokensUsed })
+  } catch (err) {
+    logger.warn("Failed to record LLM usage analytics", err)
+  }
+}
 
 export class LLMService {
   private provider: "openai" | "gemini" = "gemini"
@@ -87,6 +101,7 @@ Assistant:`
           max_tokens: 1024,
         })
         const answer = res.choices?.[0]?.message?.content || ""
+        recordUsage(res.usage?.total_tokens || 0)
         logger.info("LLM response received successfully (OpenAI)")
         return answer
       }
@@ -96,6 +111,7 @@ Assistant:`
       const result = await this.geminiModel.generateContent(fullPrompt)
       const response = await result.response
       const answer = response.text()
+      recordUsage(response.usageMetadata?.totalTokenCount || 0)
       logger.info("LLM response received successfully (Gemini)")
       return answer
     } catch (error) {
@@ -135,11 +151,13 @@ Message: ${userText}
           temperature: 0.3,
         })
         text = (res.choices?.[0]?.message?.content || "").trim()
+        recordUsage(res.usage?.total_tokens || 0)
       } else {
         if (!this.geminiModel) throw new Error("Gemini model not initialized")
         const result = await this.geminiModel.generateContent(prompt)
         const response = await result.response
         text = response.text().trim()
+        recordUsage(response.usageMetadata?.totalTokenCount || 0)
       }
 
       // Try to parse JSON directly
@@ -177,11 +195,13 @@ Message: ${userText}
           model: this.openaiModel,
           messages: [{ role: "user", content: userText }],
         })
+        recordUsage(res.usage?.total_tokens || 0)
         return res.choices?.[0]?.message?.content || ""
       }
       if (!this.geminiModel) throw new Error("Gemini model not initialized")
       const result = await this.geminiModel.generateContent(userText)
       const response = await result.response
+      recordUsage(response.usageMetadata?.totalTokenCount || 0)
       return response.text()
     } catch (error) {
       logger.error("Error in simple LLM ask:", error)
@@ -218,6 +238,7 @@ Message: ${userText}
           max_tokens: 500
         })
         const answer = res.choices?.[0]?.message?.content || ""
+        recordUsage(res.usage?.total_tokens || 0)
         logger.info("Image analyzed successfully (OpenAI Vision)")
         return answer
       }
@@ -236,6 +257,7 @@ Message: ${userText}
       const result = await this.geminiModel.generateContent([prompt, imagePart])
       const response = await result.response
       const answer = response.text()
+      recordUsage(response.usageMetadata?.totalTokenCount || 0)
       logger.info("Image analyzed successfully (Gemini Vision)")
       return answer
     } catch (error) {

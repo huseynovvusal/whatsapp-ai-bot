@@ -18,6 +18,12 @@ npm run start
 # Build TypeScript to JavaScript
 npm run build
 
+# Seed the database with demo data (see "Fixtures / demo data" below)
+npm run seed
+npm run seed -- --days 30   # shorter window
+npm run seed -- --reset     # wipe demo data, then re-seed
+npm run seed -- --clean     # wipe demo data and exit
+
 # Format code
 npm run prettier
 
@@ -150,7 +156,20 @@ Available at `http://localhost:3000/admin/login` when bot is running. Mounted vi
 - **Dashboard**: Real-time stats (messages, users, conversations, today's activity)
 - **Settings Tab**: Configure bot name, admin numbers, rate limits, LLM provider/keys, system prompt
 - **Conversations Tab**: View recent conversations and search messages
-- **Analytics Tab**: Usage statistics (coming soon)
+- **Analytics Tab**: Usage statistics, served by `GET /api/analytics?days=7|30|90`
+  - A single filter row (7/30/90 days) scopes every stat, chart and table on the tab,
+    so all the numbers on screen always describe the same window
+  - KPI row: messages, AI calls, tokens used, active people (with deltas vs the
+    preceding equal-length window where a baseline exists)
+  - Charts: messages per day (line + area), activity by hour (columns), most active
+    people and busiest chats (ranked bars)
+  - Every chart has a **table view** toggle, so no value is reachable only by hovering
+  - Rendering lives in `public/js/analytics.js` — hand-rolled inline SVG with **no
+    charting dependency**, so the panel works on an air-gapped host. Charts render on
+    first reveal of the tab (they need a measurable width) and re-render on resize.
+  - Chart colors are declared once as CSS custom properties (`--chart-*`) in
+    `views/admin.ejs`; the series hue is the app's brand indigo, validated for
+    contrast and colour-vision safety against the white card surface
 - **Logs Tab**: Real-time logs viewer with WebSocket streaming
   - Live log streaming from all services. Every winston log (`logger.*`) is bridged
     to the admin panel via a custom transport in `src/lib/logger.ts`
@@ -172,6 +191,40 @@ The admin panel connects to `ws://localhost:3000/ws` for real-time updates:
 - **QR code display**: QR code appears automatically in the Logs tab when needed
 - **Connection status**: Shows WhatsApp connection status and connected phone number
 - **Auto-reconnect**: WebSocket automatically reconnects if connection is lost
+
+## Fixtures / demo data
+
+`scripts/seed.ts` (`npm run seed`) populates the SQLite database with realistic demo
+traffic so the dashboard — especially the Analytics tab — can be developed and
+reviewed without waiting for weeks of real usage.
+
+- Generates messages across 3 demo groups and 3 demo private chats, spread over N days
+  with a weekday/weekend rhythm, an hour-of-day curve, and a gentle upward trend
+- Uses a **deterministic PRNG**, so repeated runs produce the same reviewable dataset
+- Derives the `analytics` rows from the generated messages, so the totals, charts and
+  per-chat/per-user breakdowns all agree with each other
+- All demo rows are namespaced behind `demo-*` chat IDs and `999000*` phone numbers, so
+  `--reset` / `--clean` remove exactly what the script created and never touch real
+  conversations
+
+`scripts/` sits outside `rootDir` (`./src`), so it is excluded from `npm run build`;
+`ts-node` type-checks it at run time.
+
+## Analytics data model
+
+`databaseService.updateAnalytics()` maintains one row per date. Two things feed it:
+
+- **`totalMessages`** — incremented by `memoryService.addMessage()`
+- **`apiCalls` / `tokensUsed`** — incremented by `recordUsage()` in
+  `src/services/llm.service.ts` after every completion, vision call and contextual
+  reply decision, reading `usage.total_tokens` (OpenAI) or
+  `usageMetadata.totalTokenCount` (Gemini). Analytics failures are swallowed so they
+  can never break a reply.
+
+Range-scoped breakdowns (`getTopUsers`, `getTopConversations`, `getHourlyActivity`,
+`getRangeTotals`) are computed from the `messages` table rather than the daily
+aggregates, which keeps them consistent with each other. The bot's own messages are
+stored with sender `Bot` and excluded from "most active people".
 
 ## Testing
 
