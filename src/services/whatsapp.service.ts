@@ -196,6 +196,25 @@ export class WhatsAppService {
   }
 
   /**
+   * The bot's own WhatsApp identity — who we are connected as.
+   */
+  public getOwnIdentity(): {
+    connected: boolean
+    jid: string | null
+    phone: string | null
+    name: string | null
+  } {
+    const user = this.sock?.user
+    if (!user) return { connected: false, jid: null, phone: null, name: null }
+    return {
+      connected: true,
+      jid: user.id || null,
+      phone: user.id ? cleanPhoneFromJid(baseFromJid(user.id)) : null,
+      name: user.name || null,
+    }
+  }
+
+  /**
    * Get group participants with their profile information
    */
   public async getGroupParticipants(

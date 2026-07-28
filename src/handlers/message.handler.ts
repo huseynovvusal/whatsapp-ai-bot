@@ -7,6 +7,7 @@ import { rateLimiter } from "@/services/ratelimit.service"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
 import { AdminUtils } from "@/utils/admin.utils"
+import { ragService } from "@/services/rag.service"
 import { createLogger } from "@/lib/logger"
 import { config } from "@/config/env"
 
@@ -45,190 +46,225 @@ export class MessageHandler {
   }
 
   /**
+   * Decide whether the bot may reply to this message, before anything is sent.
+   *
+   * Every "should we speak" rule lives here so that no outbound side effect —
+   * not a reply, not a typing indicator, not even an emoji reaction — can happen
+   * in a chat the operator has switched off. Previously the 👀 reaction was sent
+   * before the private-chat check, so disabling private replies still produced a
+   * visible reaction.
+   */
+  private decideResponse(info: MessageInfo): {
+    respond: boolean
+    mode: "direct" | "contextual"
+    reason: string
+  } {
+    const no = (reason: string) => ({ respond: false, mode: "direct" as const, reason })
+
+    if (info.isGroup) {
+      // Being mentioned or replied to is always an explicit invitation.
+      if (info.isMentioned || info.isReplyToBot) {
+        return { respond: true, mode: "direct", reason: "mentioned or replied to" }
+      }
+      if (runtimeConfig.get("respondToGroupMessages") !== true) {
+        return no("group responses are limited to mentions")
+      }
+      return runtimeConfig.get("contextualGroupResponses") === true
+        ? { respond: true, mode: "contextual", reason: "contextual group mode" }
+        : { respond: true, mode: "direct", reason: "respond-to-all group mode" }
+    }
+
+    if (runtimeConfig.get("enablePrivateChat") === false) {
+      return no("private chat responses are disabled")
+    }
+    return { respond: true, mode: "direct", reason: "private chat" }
+  }
+
+  /** Rate-limit gate. Admins are exempt. Returns null when allowed. */
+  private rateLimitMessage(info: MessageInfo): string | null {
+    if (AdminUtils.isAdmin(info.sender)) return null
+    if (rateLimiter.canMakeRequest(info.sender)) return null
+    const waitTime = rateLimiter.getTimeUntilReset(info.sender)
+    const maxRequests =
+      Number(runtimeConfig.get("rateLimitMaxRequests")) || config.RATE_LIMIT_MAX_REQUESTS
+    return `⏱️ Slow down! You can only message me ${maxRequests} times in the configured time window. Try again in ${waitTime} seconds.`
+  }
+
+  /** Send text, preferring a native reply so threading is preserved. */
+  private async reply(info: MessageInfo, text: string, mentionedJids?: string[]): Promise<void> {
+    if (info.quotedMessage) {
+      await whatsappService.sendReply(info.from, text, info.quotedMessage, mentionedJids)
+    } else {
+      await whatsappService.sendMessage(info.from, text, mentionedJids)
+    }
+  }
+
+  /**
    * Handle incoming WhatsApp message
    */
   public async handle(info: MessageInfo): Promise<void> {
+    // Tracks whether we ever committed to replying, so the error handler below
+    // stays silent in chats where the bot is not supposed to speak.
+    let committedToReply = false
+
     try {
-      // Check if bot is enabled (except for admin commands)
-      if (!info.text.startsWith("!")) {
-        const botEnabled = runtimeConfig.get("botEnabled") as boolean
-        if (!botEnabled) {
+      const isAdminCommand = info.text.startsWith("!")
+
+      if (!isAdminCommand) {
+        if (runtimeConfig.get("botEnabled") !== true) {
           logger.debug(`Bot is disabled, ignoring message from ${info.sender}`)
+          return
+        }
+        if (!this.checkAccessControl(info)) {
+          logger.info(`Access denied for ${info.sender} in chat ${info.from}`)
           return
         }
       }
 
-      // Check access control first (except for admin commands)
-      if (!info.text.startsWith("!") && !this.checkAccessControl(info)) {
-        logger.info(`Access denied for ${info.sender} in chat ${info.from}`)
-        return
-      }
-
-      // Check if it's an admin command
-      if (info.text.startsWith("!")) {
+      if (isAdminCommand) {
         await this.handleAdminCommand(info)
         return
       }
 
-      // Always add message to memory for context (scoped to chat id)
+      // Always remember the message for context, even if we stay quiet.
       await memoryService.addMessage(info.from, info.sender, info.text, info.senderName)
 
-      // React to acknowledge message received (optional - can be configured)
+      const decision = this.decideResponse(info)
+      if (!decision.respond) {
+        logger.debug(`Staying quiet in ${info.from}: ${decision.reason}`)
+        return
+      }
+
+      // Contextual mode decides for itself whether to speak, and stays silent
+      // (no reaction, no rate-limit notice) when it decides not to.
+      if (decision.mode === "contextual") {
+        await this.handleContextualResponse(info)
+        return
+      }
+
+      // From here on the bot has committed to replying in this chat.
+      committedToReply = true
+
+      const limitMessage = this.rateLimitMessage(info)
+      if (limitMessage) {
+        await this.reply(info, limitMessage)
+        return
+      }
+
+      // Acknowledge explicit invitations with a reaction.
       if (info.isMentioned || info.isReplyToBot) {
         try {
-          await whatsappService.sendReaction(info.from, info.quotedMessage?.key, '👀')
-        } catch (err) {
-          // Ignore reaction errors
+          await whatsappService.sendReaction(info.from, info.quotedMessage?.key, "👀")
+        } catch {
+          // A failed reaction must never stop the actual reply.
         }
       }
 
-      // In groups: only respond if mentioned OR replied to bot
-      if (info.isGroup) {
-        const respondToGroups = runtimeConfig.get("respondToGroupMessages") as boolean | undefined
-        const contextualMode = runtimeConfig.get("contextualGroupResponses") as boolean | undefined
-
-        // If mentioned or a reply to bot — immediate handle
-        if (info.isMentioned || info.isReplyToBot) {
-          // Check rate limit for group users (not for admins)
-          if (!AdminUtils.isAdmin(info.sender)) {
-            if (!rateLimiter.canMakeRequest(info.sender)) {
-              const waitTime = rateLimiter.getTimeUntilReset(info.sender)
-              const maxRequests =
-                Number(runtimeConfig.get("rateLimitMaxRequests")) || config.RATE_LIMIT_MAX_REQUESTS
-              const rateLimitMsg = `⏱️ Slow down! You can only mention me ${maxRequests} times in the configured time window. Try again in ${waitTime} seconds.`
-              if (info.quotedMessage) {
-                await whatsappService.sendReply(info.from, rateLimitMsg, info.quotedMessage)
-              } else {
-                await whatsappService.sendMessage(info.from, rateLimitMsg)
-              }
-              return
-            }
-          }
-          await this.handleAIResponse(info)
-          return
-        }
-
-        // If respondToGroups is enabled, decide behavior
-        if (respondToGroups) {
-          if (contextualMode) {
-            // Contextual mode: ask low-cost LLM helper whether to reply.
-            const last = this.lastContextualReplyAt.get(info.from) || 0
-            const now = Date.now()
-            if (now - last < this.contextualCooldownMs) {
-              return
-            }
-            // Build context and ask LLM whether to reply
-            const ctx = memoryService.getContext(info.from)
-            const sys = memoryService.getSystemPrompt()
-            try {
-              const decision = await llmService.askForReactiveReply(info.text, ctx, sys)
-              if (decision.shouldReply) {
-                // Rate-limiting check
-                if (!AdminUtils.isAdmin(info.sender)) {
-                  if (!rateLimiter.canMakeRequest(info.sender)) return
-                }
-                const participants = memoryService.getParticipants(info.from)
-                const { text: finalReply, mentionedJids } = parseMentions(decision.reply || "", participants)
-
-                if (info.quotedMessage)
-                  await whatsappService.sendReply(
-                    info.from,
-                    finalReply,
-                    info.quotedMessage,
-                    mentionedJids
-                  )
-                else await whatsappService.sendMessage(info.from, finalReply, mentionedJids)
-                await memoryService.addMessage(info.from, "Bot", finalReply, "Bot")
-                this.lastContextualReplyAt.set(info.from, now)
-              }
-            } catch (err) {
-              logger.warn("Contextual decision LLM failed", err)
-            }
-            return
-          } else {
-            // Non contextual: reply to all messages (still check rate limit)
-            if (!AdminUtils.isAdmin(info.sender)) {
-              if (!rateLimiter.canMakeRequest(info.sender)) {
-                const waitTime = rateLimiter.getTimeUntilReset(info.sender)
-                const maxRequests =
-                  Number(runtimeConfig.get("rateLimitMaxRequests")) ||
-                  config.RATE_LIMIT_MAX_REQUESTS
-                const rateLimitMsg = `⏱️ Slow down! You can only mention me ${maxRequests} times in the configured time window. Try again in ${waitTime} seconds.`
-                if (info.quotedMessage) {
-                  await whatsappService.sendReply(info.from, rateLimitMsg, info.quotedMessage)
-                } else {
-                  await whatsappService.sendMessage(info.from, rateLimitMsg)
-                }
-                return
-              }
-            }
-            await this.handleAIResponse(info)
-            return
-          }
-        }
-        // Otherwise, just store in memory and don't respond
-        return
-      }
-
-      // In private chats: always respond (no rate limit for private chats)
-      // In private chats: respond only if enabled in runtime config
-      const enablePrivate = runtimeConfig.get("enablePrivateChat")
-      if (enablePrivate === false) {
-        // Private chat responses are disabled; simply return
-        return
-      }
       await this.handleAIResponse(info)
     } catch (error) {
       logger.error("Error in message handler:", error)
-      await whatsappService.sendMessage(
-        info.from,
-        "❌ Sorry, something went wrong. Please try again."
-      )
+      if (!committedToReply) return
+      try {
+        await whatsappService.sendMessage(
+          info.from,
+          "❌ Sorry, something went wrong. Please try again."
+        )
+      } catch (sendErr) {
+        logger.error("Failed to deliver the error notice", sendErr)
+      }
     }
+  }
+
+  /**
+   * Contextual group mode: ask the LLM whether it is worth chiming in, and only
+   * then send anything.
+   */
+  private async handleContextualResponse(info: MessageInfo): Promise<void> {
+    const last = this.lastContextualReplyAt.get(info.from) || 0
+    const now = Date.now()
+    if (now - last < this.contextualCooldownMs) return
+
+    try {
+      const context = await this.buildContext(info)
+      const decision = await llmService.askForReactiveReply(
+        info.text,
+        context,
+        memoryService.getSystemPrompt()
+      )
+      if (!decision.shouldReply) return
+
+      // Silent rate-limit: an unprompted interjection should not nag.
+      if (!AdminUtils.isAdmin(info.sender) && !rateLimiter.canMakeRequest(info.sender)) return
+
+      const participants = memoryService.getParticipants(info.from)
+      const { text: finalReply, mentionedJids } = parseMentions(decision.reply || "", participants)
+      if (!finalReply.trim()) return
+
+      await this.reply(info, finalReply, mentionedJids)
+      await memoryService.addMessage(info.from, "Bot", finalReply, "Bot")
+      this.lastContextualReplyAt.set(info.from, now)
+    } catch (err) {
+      logger.warn("Contextual decision failed", err)
+    }
+  }
+
+  /**
+   * Assemble everything the LLM should see for this chat:
+   * group metadata, recalled long-term memories, and recent conversation.
+   */
+  private async buildContext(info: MessageInfo): Promise<string> {
+    const sections: string[] = []
+    const participants = memoryService.getParticipants(info.from)
+
+    // Group metadata + who the bot may tag
+    if (info.isGroup) {
+      try {
+        const g = await whatsappService.getGroupInfo(info.from)
+        if (g) {
+          const participantList =
+            participants.length > 0
+              ? participants.map((p) => `- ${p.name} (${p.phone})`).join("\n")
+              : "No participants tracked yet"
+
+          sections.push(`Group Metadata:
+SUBJECT: ${g.subject || "(no subject)"}
+OWNER: ${cleanPhoneFromJid(g.owner || "")}
+TOTAL PARTICIPANTS: ${g.participantCount || 0}
+
+Known Participants (from conversation):
+${participantList}
+
+Instructions: You can mention people by using @Name format (e.g., @John). When you mention someone, make sure to use their exact name as shown in the participant list above.`)
+        }
+      } catch {
+        // Group metadata is optional context; carry on without it.
+      }
+    }
+
+    // Long-term memory: semantically relevant history beyond the recent window.
+    try {
+      const memories = await ragService.retrieve(info.text, info.from)
+      if (memories.length) {
+        sections.push(ragService.formatMemories(memories))
+        logger.info(
+          `Recalled ${memories.length} memory chunk(s) (best match ${memories[0].score.toFixed(2)})`
+        )
+      }
+    } catch (err) {
+      logger.warn("Memory recall failed, continuing without it", err)
+    }
+
+    sections.push(memoryService.getContext(info.from))
+    return sections.join("\n\n")
   }
 
   /**
    * Handle AI response
    */
   private async handleAIResponse(info: MessageInfo): Promise<void> {
-    // Get context and system prompt
-    let context = memoryService.getContext(info.from)
     const systemPrompt = memoryService.getSystemPrompt()
-
-    // Get participants from memory for mention parsing
     const participants = memoryService.getParticipants(info.from)
-
-    // If group, append group metadata and participant list to context
-    if (info.isGroup) {
-      try {
-        const g = await whatsappService.getGroupInfo(info.from)
-        if (g) {
-          const owner = cleanPhoneFromJid(g.owner || "")
-          const subject = g.subject || "(no subject)"
-          const participantCount = g.participantCount || 0
-
-          // Build participant list for context
-          const participantList = participants.length > 0
-            ? participants.map((p) => `- ${p.name} (${p.phone})`).join("\n")
-            : "No participants tracked yet"
-
-          const groupMeta = `Group Metadata:
-SUBJECT: ${subject}
-OWNER: ${owner}
-TOTAL PARTICIPANTS: ${participantCount}
-
-Known Participants (from conversation):
-${participantList}
-
-Instructions: You can mention people by using @Name format (e.g., @John). When you mention someone, make sure to use their exact name as shown in the participant list above.
-
-`
-          context = `${groupMeta}${context}`
-        }
-      } catch (err) {
-        // ignore
-      }
-    }
+    const context = await this.buildContext(info)
 
     // Remove bot mention from text
     const botName = (runtimeConfig.get("botName") as string) || config.BOT_NAME
@@ -251,12 +287,7 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
     // Add bot response to memory
     await memoryService.addMessage(info.from, "Bot", finalText, "Bot")
 
-    // Send response - use reply if original message is available
-    if (info.quotedMessage) {
-      await whatsappService.sendReply(info.from, finalText, info.quotedMessage, mentionedJids)
-    } else {
-      await whatsappService.sendMessage(info.from, finalText, mentionedJids)
-    }
+    await this.reply(info, finalText, mentionedJids)
 
     if (mentionedJids.length > 0) {
       logger.info(`Response included ${mentionedJids.length} mention(s)`)

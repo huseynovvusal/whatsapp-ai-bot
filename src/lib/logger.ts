@@ -50,6 +50,11 @@ class WebSocketTransport extends Transport {
 // Shared WebSocket transport instance. Only INFO and above are streamed to keep
 // the admin Logs tab readable (debug noise stays in the console/file logs).
 const webSocketTransport = new WebSocketTransport({ level: "info" })
+// Every createLogger() call pipes another logger into this single transport, and
+// winston attaches its own listeners each time. The app has more services than
+// Node's default cap of 10, which would otherwise emit a spurious
+// MaxListenersExceededWarning on startup. 0 disables the cap.
+webSocketTransport.setMaxListeners(0)
 
 function createLogger(level: string, serviceName: string): Logger {
   const logger = winston.createLogger({

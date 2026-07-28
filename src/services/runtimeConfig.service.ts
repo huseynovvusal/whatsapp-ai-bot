@@ -22,6 +22,21 @@ export interface RuntimeConfigSchema {
   respondToGroupMessages?: boolean
   contextualGroupResponses?: boolean
   accessControlMode?: "disabled" | "whitelist" | "blacklist"
+  // Short-term memory. 0 means "no limit" for both of these.
+  /** Messages of recent history kept per chat. 0 = unlimited. */
+  memoryMessageLimit?: number
+  /** How long a message stays in short-term memory, ms. 0 = never expires. */
+  memoryWindowMs?: number
+  // Retrieval-Augmented Generation (long-term memory)
+  ragEnabled?: boolean
+  /** How many remembered chunks to pull into context. */
+  ragTopK?: number
+  /** Similarity floor (0-1); below this a chunk is considered irrelevant. */
+  ragMinScore?: number
+  /** Allow recall across different chats. Off by default for privacy. */
+  ragCrossChat?: boolean
+  /** Override the embedding model; blank uses the provider default. */
+  embeddingModel?: string
 }
 
 export class RuntimeConfigService {
@@ -48,6 +63,13 @@ export class RuntimeConfigService {
       respondToGroupMessages: false,
       contextualGroupResponses: false,
       accessControlMode: config.ACCESS_CONTROL_MODE,
+      memoryMessageLimit: config.MEMORY_MESSAGE_LIMIT,
+      memoryWindowMs: config.MEMORY_WINDOW_MS,
+      ragEnabled: true,
+      ragTopK: 4,
+      ragMinScore: 0.3,
+      ragCrossChat: false,
+      embeddingModel: "",
     }
 
     this.loadFromFile()

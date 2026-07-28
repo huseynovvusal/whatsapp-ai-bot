@@ -169,7 +169,242 @@ export class DatabaseService {
       CREATE INDEX IF NOT EXISTS idx_blacklist_type ON blacklist(type);
     `)
 
+    // Knowledge base (RAG). Chunks of conversation plus their embedding vector.
+    // `vector` is a Float32 BLOB, stored already L2-normalised so similarity
+    // search is a dot product.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS knowledge_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatId TEXT NOT NULL,
+        chatName TEXT,
+        isGroup INTEGER DEFAULT 0,
+        text TEXT NOT NULL,
+        startTimestamp INTEGER NOT NULL,
+        endTimestamp INTEGER NOT NULL,
+        messageCount INTEGER DEFAULT 0,
+        model TEXT NOT NULL,
+        dim INTEGER NOT NULL,
+        vector BLOB NOT NULL,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_knowledge_chatId ON knowledge_chunks(chatId);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_end ON knowledge_chunks(endTimestamp);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_model ON knowledge_chunks(model);
+    `)
+
+    // Per-chat indexing watermark, so re-indexing only picks up new messages.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS knowledge_state (
+        chatId TEXT PRIMARY KEY,
+        lastIndexedTimestamp INTEGER NOT NULL,
+        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `)
+
     logger.info("Database tables initialized")
+  }
+
+  // ============= KNOWLEDGE BASE (RAG) OPERATIONS =============
+
+  /**
+   * Messages in a chat newer than `after`, oldest first — the input to chunking.
+   */
+  public getMessagesAfter(chatId: string, after: number, limit: number = 2000): DbMessage[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM messages
+      WHERE chatId = ? AND timestamp > ?
+      ORDER BY timestamp ASC
+      LIMIT ?
+    `)
+    return stmt.all(chatId, after, limit) as DbMessage[]
+  }
+
+  /** Distinct chat IDs that have any stored messages. */
+  public getIndexableChatIds(): string[] {
+    const rows = this.db
+      .prepare("SELECT DISTINCT chatId FROM messages")
+      .all() as Array<{ chatId: string }>
+    return rows.map((r) => r.chatId)
+  }
+
+  public getLastIndexedTimestamp(chatId: string): number {
+    const row = this.db
+      .prepare("SELECT lastIndexedTimestamp FROM knowledge_state WHERE chatId = ?")
+      .get(chatId) as { lastIndexedTimestamp: number } | undefined
+    return row?.lastIndexedTimestamp || 0
+  }
+
+  public setLastIndexedTimestamp(chatId: string, timestamp: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO knowledge_state (chatId, lastIndexedTimestamp)
+         VALUES (?, ?)
+         ON CONFLICT(chatId) DO UPDATE SET
+           lastIndexedTimestamp = excluded.lastIndexedTimestamp,
+           updatedAt = CURRENT_TIMESTAMP`
+      )
+      .run(chatId, timestamp)
+  }
+
+  public insertKnowledgeChunks(
+    chunks: Array<{
+      chatId: string
+      chatName?: string
+      isGroup: boolean
+      text: string
+      startTimestamp: number
+      endTimestamp: number
+      messageCount: number
+      model: string
+      vector: number[]
+    }>
+  ): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO knowledge_chunks
+        (chatId, chatName, isGroup, text, startTimestamp, endTimestamp, messageCount, model, dim, vector)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const insertAll = this.db.transaction((rows: typeof chunks) => {
+      for (const chunk of rows) {
+        stmt.run(
+          chunk.chatId,
+          chunk.chatName || null,
+          chunk.isGroup ? 1 : 0,
+          chunk.text,
+          chunk.startTimestamp,
+          chunk.endTimestamp,
+          chunk.messageCount,
+          chunk.model,
+          chunk.vector.length,
+          Buffer.from(new Float32Array(chunk.vector).buffer)
+        )
+      }
+    })
+    insertAll(chunks)
+  }
+
+  /**
+   * Nearest chunks to `queryVector` by dot product (vectors are pre-normalised,
+   * so this is cosine similarity).
+   *
+   * This is a linear scan. It stays comfortably fast into the tens of thousands
+   * of chunks; past that, swap in a vector index (see the VectorStore note in
+   * rag.service.ts). Only chunks from the same embedding model are comparable,
+   * so a model change simply yields no matches until re-indexing.
+   */
+  public searchKnowledgeChunks(
+    queryVector: number[],
+    options: { chatId?: string; model: string; limit?: number; minScore?: number } = {
+      model: "",
+    }
+  ): Array<{
+    id: number
+    chatId: string
+    chatName: string | null
+    text: string
+    startTimestamp: number
+    endTimestamp: number
+    messageCount: number
+    score: number
+  }> {
+    const limit = options.limit || 5
+    const minScore = options.minScore === undefined ? 0 : options.minScore
+
+    const where = ["model = ?"]
+    const params: unknown[] = [options.model]
+    if (options.chatId) {
+      where.push("chatId = ?")
+      params.push(options.chatId)
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT id, chatId, chatName, text, startTimestamp, endTimestamp, messageCount, dim, vector
+         FROM knowledge_chunks WHERE ${where.join(" AND ")}`
+      )
+      .all(...params) as Array<{
+      id: number
+      chatId: string
+      chatName: string | null
+      text: string
+      startTimestamp: number
+      endTimestamp: number
+      messageCount: number
+      dim: number
+      vector: Buffer
+    }>
+
+    const scored = []
+    for (const row of rows) {
+      if (row.dim !== queryVector.length) continue
+      const stored = new Float32Array(
+        row.vector.buffer,
+        row.vector.byteOffset,
+        row.vector.byteLength / 4
+      )
+      let score = 0
+      for (let i = 0; i < queryVector.length; i++) score += queryVector[i] * stored[i]
+      if (score < minScore) continue
+      scored.push({
+        id: row.id,
+        chatId: row.chatId,
+        chatName: row.chatName,
+        text: row.text,
+        startTimestamp: row.startTimestamp,
+        endTimestamp: row.endTimestamp,
+        messageCount: row.messageCount,
+        score,
+      })
+    }
+
+    scored.sort((a, b) => b.score - a.score)
+    return scored.slice(0, limit)
+  }
+
+  public getKnowledgeStats(): {
+    chunks: number
+    chats: number
+    models: string[]
+    oldest: number | null
+    newest: number | null
+  } {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as chunks,
+                COUNT(DISTINCT chatId) as chats,
+                MIN(startTimestamp) as oldest,
+                MAX(endTimestamp) as newest
+         FROM knowledge_chunks`
+      )
+      .get() as { chunks: number; chats: number; oldest: number | null; newest: number | null }
+    const models = (
+      this.db.prepare("SELECT DISTINCT model FROM knowledge_chunks").all() as Array<{
+        model: string
+      }>
+    ).map((m) => m.model)
+    return { ...row, models }
+  }
+
+  public getKnowledgeChunkCount(chatId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) as count FROM knowledge_chunks WHERE chatId = ?")
+      .get(chatId) as { count: number }
+    return row.count
+  }
+
+  /** Clear the knowledge base (optionally for one chat) and reset watermarks. */
+  public clearKnowledge(chatId?: string): number {
+    if (chatId) {
+      const changes = this.db
+        .prepare("DELETE FROM knowledge_chunks WHERE chatId = ?")
+        .run(chatId).changes
+      this.db.prepare("DELETE FROM knowledge_state WHERE chatId = ?").run(chatId)
+      return changes
+    }
+    const changes = this.db.prepare("DELETE FROM knowledge_chunks").run().changes
+    this.db.prepare("DELETE FROM knowledge_state").run()
+    return changes
   }
 
   // ============= MESSAGE OPERATIONS =============
@@ -264,6 +499,110 @@ export class DatabaseService {
   public getAllUsers(): DbUser[] {
     const stmt = this.db.prepare("SELECT * FROM users ORDER BY lastSeen DESC")
     return stmt.all() as DbUser[]
+  }
+
+  /**
+   * Everyone the bot knows about, joined with their real message activity.
+   * `users.messageCount` is maintained by upserts and can drift, so counts here
+   * come from the messages table.
+   */
+  public getUserDirectory(): Array<{
+    phoneNumber: string
+    displayName: string | null
+    pushName: string | null
+    firstSeen: number
+    lastSeen: number
+    messageCount: number
+    chatCount: number
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT u.phoneNumber as phoneNumber,
+             u.displayName as displayName,
+             u.pushName as pushName,
+             u.firstSeen as firstSeen,
+             u.lastSeen as lastSeen,
+             COALESCE(m.messageCount, 0) as messageCount,
+             COALESCE(m.chatCount, 0) as chatCount
+      FROM users u
+      LEFT JOIN (
+        SELECT sender, COUNT(*) as messageCount, COUNT(DISTINCT chatId) as chatCount
+        FROM messages WHERE sender != 'Bot' GROUP BY sender
+      ) m ON m.sender = u.phoneNumber
+      ORDER BY u.lastSeen DESC
+    `)
+    return stmt.all() as Array<{
+      phoneNumber: string
+      displayName: string | null
+      pushName: string | null
+      firstSeen: number
+      lastSeen: number
+      messageCount: number
+      chatCount: number
+    }>
+  }
+
+  /** Which chats a person appears in, and how active they are in each. */
+  public getUserActivity(phoneNumber: string): {
+    totalMessages: number
+    firstMessage: number | null
+    lastMessage: number | null
+    chats: Array<{ chatId: string; chatName: string | null; isGroup: boolean; count: number }>
+  } {
+    const totals = this.db
+      .prepare(
+        `SELECT COUNT(*) as totalMessages, MIN(timestamp) as firstMessage, MAX(timestamp) as lastMessage
+         FROM messages WHERE sender = ?`
+      )
+      .get(phoneNumber) as {
+      totalMessages: number
+      firstMessage: number | null
+      lastMessage: number | null
+    }
+
+    const chats = this.db
+      .prepare(
+        `SELECT m.chatId as chatId, c.chatName as chatName, COUNT(*) as count
+         FROM messages m
+         LEFT JOIN conversations c ON c.chatId = m.chatId
+         WHERE m.sender = ?
+         GROUP BY m.chatId
+         ORDER BY count DESC`
+      )
+      .all(phoneNumber) as Array<{ chatId: string; chatName: string | null; count: number }>
+
+    return {
+      ...totals,
+      chats: chats.map((c) => ({ ...c, isGroup: c.chatId.endsWith("@g.us") })),
+    }
+  }
+
+  /** Distinct senders seen in a chat, with per-chat activity. */
+  public getChatParticipants(chatId: string): Array<{
+    sender: string
+    senderName: string
+    count: number
+    lastMessageAt: number
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT sender, senderName, COUNT(*) as count, MAX(timestamp) as lastMessageAt
+      FROM messages
+      WHERE chatId = ? AND sender != 'Bot'
+      GROUP BY sender
+      ORDER BY count DESC
+    `)
+    return stmt.all(chatId) as Array<{
+      sender: string
+      senderName: string
+      count: number
+      lastMessageAt: number
+    }>
+  }
+
+  public getMessagesBySender(phoneNumber: string, limit: number = 20): DbMessage[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM messages WHERE sender = ? ORDER BY timestamp DESC LIMIT ?
+    `)
+    return stmt.all(phoneNumber, limit) as DbMessage[]
   }
 
   public getUserStats(): { total: number; active: number } {

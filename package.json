@@ -21,7 +21,6 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@google/genai": "^1.31.0",
     "@google/generative-ai": "^0.24.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "bcryptjs": "^3.0.3",
@@ -30,7 +29,6 @@
     "ejs": "^3.1.9",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
-    "langchain": "^1.1.5",
     "openai": "^6.10.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",

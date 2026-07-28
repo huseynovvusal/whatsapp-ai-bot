@@ -872,6 +872,120 @@
     .delta-down { color: var(--chart-delta-down); font-weight: 600; }
     .delta-flat { color: var(--gray-500); font-weight: 600; }
 
+    /* People & Memory panels */
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.75rem 1.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .detail-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--gray-100);
+    }
+
+    .detail-label {
+      font-size: 0.688rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--gray-500);
+      font-weight: 600;
+    }
+
+    .detail-value {
+      font-size: 0.875rem;
+      color: var(--gray-900);
+      word-break: break-word;
+    }
+
+    .detail-heading {
+      font-size: 0.938rem;
+      font-weight: 600;
+      color: var(--gray-900);
+      margin: 1.5rem 0 0.75rem;
+    }
+
+    .muted-note { color: var(--gray-500); font-size: 0.875rem; }
+
+    .mono-cell {
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 0.75rem;
+      background: var(--gray-100);
+      padding: 0.125rem 0.375rem;
+      border-radius: 0.25rem;
+    }
+
+    .badge + .badge { margin-left: 0.25rem; }
+
+    .message-list { display: flex; flex-direction: column; gap: 0.5rem; }
+
+    .message-item {
+      padding: 0.75rem;
+      background: var(--gray-50);
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+    }
+
+    .message-meta {
+      font-size: 0.688rem;
+      color: var(--gray-500);
+      margin-bottom: 0.25rem;
+    }
+
+    .message-text { font-size: 0.875rem; color: var(--gray-800); word-break: break-word; }
+
+    .inline-warning {
+      padding: 0.75rem 1rem;
+      background: #fef3c7;
+      border: 1px solid #fcd34d;
+      color: #92400e;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      margin-bottom: 1rem;
+    }
+
+    .memory-item {
+      padding: 0.75rem 1rem;
+      background: var(--gray-50);
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .memory-meta {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      font-size: 0.75rem;
+      color: var(--gray-600);
+      margin-bottom: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .memory-score {
+      font-weight: 700;
+      color: var(--primary);
+      font-variant-numeric: tabular-nums;
+      background: #eef2ff;
+      padding: 0.125rem 0.5rem;
+      border-radius: 0.25rem;
+    }
+
+    .memory-text {
+      font-family: inherit;
+      font-size: 0.813rem;
+      color: var(--gray-700);
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
     /* Access Control Lists */
     .access-list {
       display: flex;
@@ -1173,6 +1287,8 @@
       <button class="tab active" onclick="switchTab('settings')">⚙️ Settings</button>
       <button class="tab" onclick="switchTab('access')">🔒 Access Control</button>
       <button class="tab" onclick="switchTab('conversations')">💬 Conversations</button>
+      <button class="tab" onclick="switchTab('people')">👤 People</button>
+      <button class="tab" onclick="switchTab('knowledge')">🧠 Memory</button>
       <button class="tab" onclick="switchTab('analytics')">📊 Analytics</button>
       <button class="tab" onclick="switchTab('logs')">📋 Logs</button>
     </div>
@@ -1315,6 +1431,72 @@
           </div>
         </div>
 
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Memory &amp; Recall</h2>
+            <p class="card-subtitle">
+              Short-term memory is the recent conversation sent with every prompt. Long-term
+              recall searches all past messages by meaning and adds only the relevant parts,
+              which keeps token use low without limiting how far back the bot can remember.
+            </p>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Recent messages kept per chat</label>
+                <input type="number" name="memoryMessageLimit" min="0" value="<%= runtime.memoryMessageLimit %>">
+                <span class="hint">Sent with every prompt. <strong>0 = unlimited</strong> (raises token cost on busy chats).</span>
+              </div>
+              <div class="form-group">
+                <label>Short-term memory window (ms)</label>
+                <input type="number" name="memoryWindowMs" min="0" value="<%= runtime.memoryWindowMs %>">
+                <span class="hint"><strong>0 = never expires.</strong> 3600000 = 1 hour, 86400000 = 1 day.</span>
+              </div>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Long-term recall (RAG)</label>
+                <span class="hint">Let the bot search all past conversations by meaning</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="ragEnabled" <%= runtime.ragEnabled !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Recall across different chats</label>
+                <span class="hint">⚠️ Off by default: when on, something said in one group can surface in another</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="ragCrossChat" <%= runtime.ragCrossChat ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Memories per reply</label>
+                <input type="number" name="ragTopK" min="1" max="20" value="<%= runtime.ragTopK || 4 %>">
+                <span class="hint">How many recalled chunks to include (1-20)</span>
+              </div>
+              <div class="form-group">
+                <label>Relevance threshold</label>
+                <input type="number" name="ragMinScore" min="0" max="1" step="0.05" value="<%= runtime.ragMinScore === undefined ? 0.3 : runtime.ragMinScore %>">
+                <span class="hint">0-1. Higher = stricter; below this a memory is ignored.</span>
+              </div>
+              <div class="form-group">
+                <label>Embedding model (optional)</label>
+                <input type="text" name="embeddingModel" value="<%= runtime.embeddingModel || '' %>" placeholder="provider default">
+                <span class="hint">Blank uses the default. Changing this requires a rebuild in the Memory tab.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="btn-group">
           <button type="submit" class="btn btn-primary">
             <span id="save-text">Save Changes</span>
@@ -1395,6 +1577,113 @@
         <div class="btn-group">
           <button type="button" class="btn btn-danger" onclick="clearAllMemory()">Clear All Memory</button>
         </div>
+      </div>
+    </div>
+
+    <!-- People Tab -->
+    <div class="tab-content" id="tab-people">
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">This bot's account</h2>
+            <p class="card-subtitle">The WhatsApp identity messages are sent from</p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="loadPeople()">Refresh</button>
+        </div>
+        <div id="me-card">
+          <p style="color: var(--gray-500);">Loading…</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">Known people</h2>
+            <p class="card-subtitle">Everyone the bot has seen, across all chats. Select a person for full details.</p>
+          </div>
+          <input type="search" id="people-search" class="logs-input" placeholder="Search name or number…" oninput="renderPeople()" aria-label="Search people">
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Number</th>
+                <th>Messages</th>
+                <th>Chats</th>
+                <th>Last seen</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="people-list">
+              <tr><td colspan="6"><div class="empty-state"><p>Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="person-detail-card" style="display:none;">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title" id="person-detail-title">Person</h2>
+            <p class="card-subtitle">Profile, activity and recent messages</p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="closePersonDetail()">Close</button>
+        </div>
+        <div id="person-detail-body"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">Chat participants</h2>
+            <p class="card-subtitle">For groups this comes from WhatsApp, so it includes people who haven't spoken yet</p>
+          </div>
+          <select id="participants-chat-select" class="logs-input" onchange="loadParticipants()" aria-label="Select a chat">
+            <option value="">Select a chat…</option>
+          </select>
+        </div>
+        <div id="participants-body">
+          <p style="color: var(--gray-500); padding: 1rem 0;">Pick a chat to see who is in it.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge / Memory Tab -->
+    <div class="tab-content" id="tab-knowledge">
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">Long-term memory (RAG)</h2>
+            <p class="card-subtitle">
+              Past conversations are split into chunks, embedded, and recalled by meaning when
+              someone asks a related question — so the bot remembers beyond its recent-message window.
+            </p>
+          </div>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="indexKnowledge()">Index new</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="reindexKnowledge()">Rebuild all</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="clearKnowledge()">Clear</button>
+          </div>
+        </div>
+        <div id="knowledge-status">
+          <p style="color: var(--gray-500);">Loading…</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Test recall</h2>
+          <p class="card-subtitle">See exactly what the bot would remember for a question — without sending a message</p>
+        </div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem;">
+          <input type="search" id="knowledge-query" class="logs-input" style="flex:1; min-width:240px;" placeholder="e.g. what did we decide about the trip?" aria-label="Recall query">
+          <select id="knowledge-scope" class="logs-input" aria-label="Scope">
+            <option value="">All chats</option>
+          </select>
+          <button type="button" class="btn btn-primary btn-sm" onclick="searchKnowledge()">Search</button>
+        </div>
+        <div id="knowledge-results"></div>
       </div>
     </div>
 
@@ -1588,6 +1877,10 @@
       } else if (tabName === 'analytics') {
         // Charts need a measurable width, so they render on first reveal
         if (typeof initAnalyticsTab === 'function') initAnalyticsTab();
+      } else if (tabName === 'people') {
+        if (typeof loadPeople === 'function') loadPeople();
+      } else if (tabName === 'knowledge') {
+        if (typeof loadKnowledge === 'function') loadKnowledge();
       }
     }
 
@@ -1670,8 +1963,9 @@
       const formData = new FormData(form);
       const data = Object.fromEntries(formData);
 
-      // Convert checkboxes
-      ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses'].forEach(key => {
+      // Unchecked boxes are absent from FormData, so they must be set explicitly
+      ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses',
+       'ragEnabled', 'ragCrossChat'].forEach(key => {
         data[key] = formData.has(key);
       });
 
@@ -2336,5 +2630,6 @@
     connectWebSocket(); // Connect to WebSocket for real-time logs
   </script>
   <script src="/static/js/analytics.js"></script>
+  <script src="/static/js/admin-people.js"></script>
 </body>
 </html>

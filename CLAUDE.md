@@ -82,6 +82,10 @@ All major services are singleton instances created at module level:
 
 **Mention/Tagging**: Bot can tag users in responses using `@Name` format. The `parseMentions()` utility (`src/utils/mention.utils.ts`) converts AI-generated @Name mentions to WhatsApp's native mention format with JIDs. Participant list is passed to LLM in context so it knows who it can mention.
 
+**Memory, in two layers**: *short-term* memory is the recent conversation replayed into every prompt (`memoryService`), bounded by `memoryMessageLimit` and `memoryWindowMs` — both read from runtime config on every use, and both accept **0 meaning "unlimited"/"never expires"**. *Long-term* memory is retrieval (`ragService`): older conversation is chunked, embedded and searched by meaning, so the bot can recall things from months ago without replaying everything. Prefer raising recall over raising the short-term limits — token cost grows with the window but stays flat with retrieval.
+
+**Outbound guard**: `messageHandler.decideResponse()` is the single place that decides whether the bot may speak. It runs *before* any outbound side effect — reply, typing indicator, or emoji reaction — so a disabled setting produces true silence. Previously the 👀 reaction was sent before the private-chat check, so disabling private replies still produced a visible reaction. The error notice in the `catch` is likewise gated on having committed to replying, so failures never leak into chats the bot should be quiet in.
+
 **System Prompt (applied immediately)**: `runtimeConfig` is the single source of truth for the system prompt. `memoryService.getSystemPrompt()` reads it from runtime config on every call, and `memoryService.setSystemPrompt()` persists it there. Both the admin UI (`/save`) and the `!system` command go through `setSystemPrompt`, so prompt changes take effect on the very next LLM call without a restart.
 
 **Admin Commands**: Defined in `src/handlers/message.handler.ts:205`, validated via `AdminUtils.isAdmin()` checking against `ADMIN_NUMBERS` config
@@ -170,6 +174,19 @@ Available at `http://localhost:3000/admin/login` when bot is running. Mounted vi
   - Chart colors are declared once as CSS custom properties (`--chart-*`) in
     `views/admin.ejs`; the series hue is the app's brand indigo, validated for
     contrast and colour-vision safety against the white card surface
+- **People Tab**: Identity and directory
+  - The bot's own connected account (`GET /api/me`)
+  - Everyone the bot has seen, searchable, with message/chat counts (`GET /api/users`)
+  - Per-person detail: profile, which chats they appear in, recent messages
+    (`GET /api/users/:phone` — tolerates the number with or without a `+` prefix)
+  - Chat participants (`GET /api/chats/:chatId/participants`). For groups this comes
+    from WhatsApp, so it includes people who have never spoken, plus group-admin roles,
+    enriched with what the database knows
+- **Memory Tab**: Long-term recall management (see "Long-term memory (RAG)" below)
+  - Index status, chunk counts, embedding model in use
+  - Index new / Rebuild all / Clear
+  - **Test recall**: run a query and see exactly what the bot would remember, with
+    similarity scores, without sending a WhatsApp message
 - **Logs Tab**: Real-time logs viewer with WebSocket streaming
   - Live log streaming from all services. Every winston log (`logger.*`) is bridged
     to the admin panel via a custom transport in `src/lib/logger.ts`
@@ -191,6 +208,34 @@ The admin panel connects to `ws://localhost:3000/ws` for real-time updates:
 - **QR code display**: QR code appears automatically in the Logs tab when needed
 - **Connection status**: Shows WhatsApp connection status and connected phone number
 - **Auto-reconnect**: WebSocket automatically reconnects if connection is lost
+
+## Long-term memory (RAG)
+
+`src/services/rag.service.ts` gives the bot recall beyond its recent-message window.
+
+**Pipeline**: stored messages → chunked (break on a 30-minute silence, 12 messages, or
+1600 chars) → embedded once via `embeddingService` → stored as an L2-normalised Float32
+BLOB in `knowledge_chunks`. At reply time the incoming message is embedded and the
+nearest chunks are prepended to the prompt by `messageHandler.buildContext()`.
+
+**Why SQLite and not a vector database**: vectors are normalised on write, so similarity
+is a dot product and search is a linear scan over `knowledge_chunks` — no extra service to
+deploy, and the bot stays a single self-contained container. Measured at ~1,250 chunks the
+full index+search cycle is well under 100ms. If the corpus ever outgrows a linear scan,
+the access points are narrow (`insertKnowledgeChunks` / `searchKnowledgeChunks`), so a
+dedicated vector store can be swapped in behind them. LangChain is deliberately **not**
+used — the whole pipeline is a few hundred lines against the provider SDKs directly.
+
+**Indexing** is incremental, driven by a per-chat watermark in `knowledge_state`, and runs
+in the background every 5 minutes (`startBackgroundIndexing`, wired up in `index.ts`).
+Chunks record the embedding model that produced them, and search filters on it — so
+changing model yields no stale matches rather than silently wrong ones. Use **Rebuild all**
+in the Memory tab after a model change.
+
+**Privacy**: recall is scoped to the current chat unless `ragCrossChat` is enabled, which
+decides whether something said in one group can surface in another. Off by default.
+
+Retrieval failures are always swallowed — a reply must never fail because recall did.
 
 ## Fixtures / demo data
 

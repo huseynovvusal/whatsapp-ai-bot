@@ -21,27 +21,44 @@ process.env.NODE_ENV = process.env.NODE_ENV || "development"
 process.env.PORT = process.env.PORT || "3000"
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "info"
 
+/** Digits as they appear inside a JID (no leading +). */
 const DEMO_PHONE_PREFIX = "999000"
+/**
+ * How the app stores a sender: `cleanPhoneNumber()` prefixes bare digits with
+ * "+", so demo rows must use the same shape or they will not match lookups.
+ */
+const DEMO_SENDER_PREFIX = `+${DEMO_PHONE_PREFIX}`
 const DEMO_GROUP_IDS = ["demo-team@g.us", "demo-friends@g.us", "demo-family@g.us"]
 
 /** Matches only rows created by this script. */
 const IS_DEMO_SQL = `(chatId LIKE 'demo-%' OR chatId LIKE '${DEMO_PHONE_PREFIX}%')`
+const IS_DEMO_PHONE_SQL = `(phoneNumber LIKE '${DEMO_SENDER_PREFIX}%' OR phoneNumber LIKE '${DEMO_PHONE_PREFIX}%')`
 
 interface Person {
+  /** Stored sender / users.phoneNumber value, e.g. "+999000101". */
   phone: string
+  /** JID-local digits, e.g. "999000101". */
+  digits: string
   name: string
 }
 
 const PEOPLE: Person[] = [
-  { phone: `${DEMO_PHONE_PREFIX}101`, name: "Aylin Mammadova" },
-  { phone: `${DEMO_PHONE_PREFIX}102`, name: "Rashad Aliyev" },
-  { phone: `${DEMO_PHONE_PREFIX}103`, name: "Nigar Huseynova" },
-  { phone: `${DEMO_PHONE_PREFIX}104`, name: "Elvin Guliyev" },
-  { phone: `${DEMO_PHONE_PREFIX}105`, name: "Leyla Ismayilova" },
-  { phone: `${DEMO_PHONE_PREFIX}106`, name: "Tural Bayramov" },
-  { phone: `${DEMO_PHONE_PREFIX}107`, name: "Sabina Kerimli" },
-  { phone: `${DEMO_PHONE_PREFIX}108`, name: "Orkhan Safarov" },
-]
+  "101,Aylin Mammadova",
+  "102,Rashad Aliyev",
+  "103,Nigar Huseynova",
+  "104,Elvin Guliyev",
+  "105,Leyla Ismayilova",
+  "106,Tural Bayramov",
+  "107,Sabina Kerimli",
+  "108,Orkhan Safarov",
+].map((entry) => {
+  const [suffix, name] = entry.split(",")
+  return {
+    phone: `${DEMO_SENDER_PREFIX}${suffix}`,
+    digits: `${DEMO_PHONE_PREFIX}${suffix}`,
+    name,
+  }
+})
 
 interface Chat {
   chatId: string
@@ -75,21 +92,21 @@ const CHATS: Chat[] = [
     weight: 2,
   },
   {
-    chatId: `${PEOPLE[0].phone}@s.whatsapp.net`,
+    chatId: `${PEOPLE[0].digits}@s.whatsapp.net`,
     chatName: PEOPLE[0].name,
     isGroup: false,
     members: [PEOPLE[0]],
     weight: 2,
   },
   {
-    chatId: `${PEOPLE[3].phone}@s.whatsapp.net`,
+    chatId: `${PEOPLE[3].digits}@s.whatsapp.net`,
     chatName: PEOPLE[3].name,
     isGroup: false,
     members: [PEOPLE[3]],
     weight: 1,
   },
   {
-    chatId: `${PEOPLE[6].phone}@s.whatsapp.net`,
+    chatId: `${PEOPLE[6].digits}@s.whatsapp.net`,
     chatName: PEOPLE[6].name,
     isGroup: false,
     members: [PEOPLE[6]],
@@ -197,7 +214,7 @@ async function main(): Promise<void> {
       .prepare(`DELETE FROM conversations WHERE ${IS_DEMO_SQL}`)
       .run().changes
     const users = db
-      .prepare(`DELETE FROM users WHERE phoneNumber LIKE '${DEMO_PHONE_PREFIX}%'`)
+      .prepare(`DELETE FROM users WHERE ${IS_DEMO_PHONE_SQL}`)
       .run().changes
     return { messages, conversations, users }
   })

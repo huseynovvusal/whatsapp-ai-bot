@@ -6,6 +6,7 @@ import { createLogger } from "@/lib/logger"
 import { whatsappService } from "@/services/whatsapp.service"
 import { messageHandler } from "@/handlers/message.handler"
 import { wsService } from "@/services/websocket.service"
+import { ragService } from "@/services/rag.service"
 
 const logger = createLogger(config.LOG_LEVEL, "Main")
 
@@ -60,6 +61,10 @@ async function main() {
     } catch (err) {
       logger.warn("Admin UI router not loaded", err)
     }
+
+    // Keep the knowledge base current in the background so the bot can recall
+    // older conversations (see src/services/rag.service.ts)
+    ragService.startBackgroundIndexing()
 
     // Set up message handler
     whatsappService.onMessage(async (info) => {

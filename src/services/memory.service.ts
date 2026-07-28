@@ -25,16 +25,31 @@ export class MemoryService {
   private conversations: Map<string, Message[]> = new Map()
   private systemPrompt: string
 
-  private messageLimit: number
-  private retentionMs: number
-
-  constructor(messageLimit = 25, retentionMs = 60 * 60 * 1000) {
-    // Default: last 10 messages, 1 hour retention
-    this.messageLimit = messageLimit
-    this.retentionMs = retentionMs
+  constructor() {
     // Load system prompt from runtime config if set, otherwise use env value
     this.systemPrompt = (runtimeConfig.get("systemPrompt") as string) || config.SYSTEM_PROMPT
     this.startPruning()
+  }
+
+  /**
+   * Messages kept per chat. Read from runtime config on every use so the admin
+   * UI takes effect immediately. 0 means unlimited.
+   */
+  private getMessageLimit(): number {
+    const configured = runtimeConfig.get("memoryMessageLimit")
+    const value = configured === undefined ? config.MEMORY_MESSAGE_LIMIT : Number(configured)
+    return Number.isFinite(value) && value >= 0 ? value : config.MEMORY_MESSAGE_LIMIT
+  }
+
+  /**
+   * How long a message stays in short-term memory. 0 means it never expires —
+   * long-range recall is then handled by retrieval (see rag.service.ts) rather
+   * than by keeping everything in the prompt.
+   */
+  private getRetentionMs(): number {
+    const configured = runtimeConfig.get("memoryWindowMs")
+    const value = configured === undefined ? config.MEMORY_WINDOW_MS : Number(configured)
+    return Number.isFinite(value) && value >= 0 ? value : config.MEMORY_WINDOW_MS
   }
 
   /**
@@ -58,10 +73,11 @@ export class MemoryService {
     const messages = this.conversations.get(chatId) || []
     messages.push(message)
 
-    // Keep only last `messageLimit` messages in memory
-    if (messages.length > this.messageLimit) {
-      messages.splice(0, messages.length - this.messageLimit)
-      logger.debug(`Pruned old messages for ${chatId} to keep last ${this.messageLimit}`)
+    // Keep only the last `messageLimit` messages in memory (0 = unlimited)
+    const messageLimit = this.getMessageLimit()
+    if (messageLimit > 0 && messages.length > messageLimit) {
+      messages.splice(0, messages.length - messageLimit)
+      logger.debug(`Pruned old messages for ${chatId} to keep last ${messageLimit}`)
     }
 
     this.conversations.set(chatId, messages)
@@ -184,9 +200,13 @@ export class MemoryService {
    * Remove messages older than `retentionMs`
    */
   private pruneOldMessages(): void {
+    const retentionMs = this.getRetentionMs()
+    // 0 = messages never expire; retrieval handles long-range recall instead.
+    if (retentionMs <= 0) return
+
     const now = Date.now()
     for (const [chatId, messages] of this.conversations.entries()) {
-      const active = messages.filter((msg) => now - msg.timestamp <= this.retentionMs)
+      const active = messages.filter((msg) => now - msg.timestamp <= retentionMs)
       const prunedCount = messages.length - active.length
       if (prunedCount > 0) logger.debug(`Pruned ${prunedCount} messages for ${chatId}`)
       if (active.length === 0) this.conversations.delete(chatId)
@@ -207,5 +227,6 @@ export class MemoryService {
   }
 }
 
-// Singleton instance with defaults: 10 messages, 1 hour retention
+// Singleton. Limits are read from runtime config on each use, so they can be
+// changed from the admin UI without a restart.
 export const memoryService = new MemoryService()
