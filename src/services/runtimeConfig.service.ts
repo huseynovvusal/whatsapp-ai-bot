@@ -52,6 +52,15 @@ export interface RuntimeConfigSchema {
   companionFreeMode?: boolean
   /** Companion: reply length ceiling in characters. 0 = no limit. */
   companionMaxChars?: number
+  /** Companion: ceiling on the bot's share of a chat. */
+  companionChattiness?: "selective" | "present" | "talkative"
+  /** Companion: occasionally answer minutes later, like someone who was away. */
+  companionLateReplies?: boolean
+  /**
+   * Human delivery mechanics: read pause, typing time proportional to the reply,
+   * multi-message bursts, selective quoting. Off = send immediately in one message.
+   */
+  humanTiming?: boolean
   // Spending guardrails
   /** Enforce the token budgets below. */
   budgetEnabled?: boolean
@@ -104,6 +113,9 @@ export class RuntimeConfigService {
       companionAdaptiveStyle: true,
       companionFreeMode: false,
       companionMaxChars: 350,
+      companionChattiness: "selective",
+      companionLateReplies: false,
+      humanTiming: true,
       budgetEnabled: false,
       dailyTokenLimit: 0,
       monthlyTokenLimit: 0,

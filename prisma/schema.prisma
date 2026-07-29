@@ -137,8 +137,10 @@ model KnowledgeState {
 }
 
 model ChatSetting {
-  chatId    String   @id
-  persona   String?
+  chatId String @id
+  persona String?
+  /// "selective" | "present" | "talkative"; null follows the global setting.
+  chattiness String?
   updatedAt DateTime @updatedAt
 
   @@map("chat_settings")

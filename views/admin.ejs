@@ -1493,6 +1493,60 @@
               </span>
             </div>
 
+            <div class="form-group">
+              <label>How much it joins in <span class="pill">Companion</span></label>
+              <select name="companionChattiness">
+                <option value="selective" <%= (runtime.companionChattiness || 'selective') === 'selective' ? 'selected' : '' %>>Selective — about 1 message in 10 is the bot</option>
+                <option value="present" <%= runtime.companionChattiness === 'present' ? 'selected' : '' %>>Present — about 1 in 5</option>
+                <option value="talkative" <%= runtime.companionChattiness === 'talkative' ? 'selected' : '' %>>Talkative — about 1 in 3</option>
+              </select>
+              <span class="hint">
+                A ceiling on the bot's share of a chat. When it has been talking too much
+                it stays quiet, even if a reply would have been reasonable. Override per
+                chat from the Conversations tab or with <code>!chattiness</code>.
+              </span>
+            </div>
+
+            <div class="mode-callout">
+              <strong>How it decides when to speak.</strong> Rather than judging every message
+              the instant it arrives, Companion waits for the conversation to settle — longer
+              when a chat is busy, shorter when it is quiet — then considers the whole burst at
+              once. That is why several messages can go by before it answers, the same way a
+              person reads a few messages and replies to the thread. It also means a rapid
+              burst costs one AI call instead of one per message. Being @mentioned always gets
+              a prompt reply.
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Human delivery <span class="pill">Companion</span></label>
+                <span class="hint">
+                  Pauses to "read", holds the typing indicator for as long as the reply would
+                  actually take to type, sends longer replies as two or three messages, and
+                  only quotes when the thread has moved on. Turn off to send instantly in one
+                  message.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="humanTiming" <%= runtime.humanTiming !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Occasional late replies <span class="pill">Companion</span></label>
+                <span class="hint">
+                  Sometimes answers a minute or two later, like someone who put their phone
+                  down. Off by default — it will occasionally reply to a moment that has passed.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="companionLateReplies" <%= runtime.companionLateReplies ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
             <div class="toggle-group">
               <div class="toggle-info">
                 <label class="toggle-label">Emoji reactions</label>
@@ -2216,7 +2270,8 @@
       // Unchecked boxes are absent from FormData, so they must be set explicitly
       ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses',
        'ragEnabled', 'ragCrossChat', 'emojiReactions',
-       'companionAdaptiveStyle', 'companionFreeMode', 'budgetEnabled'].forEach(key => {
+       'companionAdaptiveStyle', 'companionFreeMode', 'budgetEnabled',
+       'humanTiming', 'companionLateReplies'].forEach(key => {
         data[key] = formData.has(key);
       });
 

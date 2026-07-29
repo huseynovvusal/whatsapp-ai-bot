@@ -3,6 +3,7 @@ import { createLogger } from "@/lib/logger"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
 import { styleService } from "@/services/style.service"
+import { Chattiness, isChattiness } from "@/services/pacer.service"
 
 const logger = createLogger(config.LOG_LEVEL, "PersonaService")
 
@@ -87,6 +88,8 @@ export class PersonaService {
    * through on every change. Reads stay synchronous and free.
    */
   private overrides: Map<string, Persona> = new Map()
+  /** Per-chat chattiness overrides, cached for the same hot-path reason. */
+  private chattinessOverrides: Map<string, Chattiness> = new Map()
 
   /** Warm the override cache. Called once at startup. */
   public async load(): Promise<void> {
@@ -97,7 +100,13 @@ export class PersonaService {
           PERSONAS.includes(v as Persona)
         ) as Array<[string, Persona]>
       )
-      logger.info(`Loaded ${this.overrides.size} per-chat personality override(s)`)
+      const chattiness = await databaseService.getChatChattinessOverrides()
+      this.chattinessOverrides = new Map(
+        Object.entries(chattiness).filter(([, v]) => isChattiness(v)) as Array<[string, Chattiness]>
+      )
+      logger.info(
+        `Loaded ${this.overrides.size} personality and ${this.chattinessOverrides.size} chattiness override(s)`
+      )
     } catch (err) {
       logger.warn("Could not load personality overrides; using the global default", err)
     }
@@ -158,6 +167,25 @@ export class PersonaService {
   public isAdaptive(chatId?: string): boolean {
     if (this.getPersonaForChat(chatId) !== "companion") return false
     return runtimeConfig.get("companionAdaptiveStyle") !== false
+  }
+
+  /**
+   * Per-chat chattiness override, or null to follow the global setting.
+   * Stored alongside the persona override in `chat_settings`.
+   */
+  public getChattinessForChat(chatId?: string): Chattiness | null {
+    if (!chatId) return null
+    return this.chattinessOverrides.get(chatId) || null
+  }
+
+  public async setChattinessForChat(chatId: string, level: Chattiness | null): Promise<void> {
+    if (level === null) {
+      this.chattinessOverrides.delete(chatId)
+    } else {
+      this.chattinessOverrides.set(chatId, level)
+    }
+    await databaseService.setChatChattiness(chatId, level)
+    logger.info(`Chattiness for ${chatId} set to ${level ?? "default"}`)
   }
 
   /** Reply length ceiling in characters for this chat. 0 = no limit. */

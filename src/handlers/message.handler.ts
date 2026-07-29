@@ -9,6 +9,21 @@ import { databaseService } from "@/services/database.service"
 import { AdminUtils } from "@/utils/admin.utils"
 import { ragService } from "@/services/rag.service"
 import { budgetService } from "@/services/budget.service"
+import {
+  conversationPacer,
+  isChattiness,
+  CHATTINESS_LABELS,
+  Chattiness,
+} from "@/services/pacer.service"
+import {
+  readDelayMs,
+  typingDelayMs,
+  shouldQuote,
+  splitIntoBursts,
+  burstGapMs,
+  describeTiming,
+  avoidRepeatOpeners,
+} from "@/utils/humanize.utils"
 import { personaService, PERSONA_LABELS } from "@/services/persona.service"
 import { sanitiseEmoji } from "@/utils/emoji.utils"
 import { trimToLength } from "@/utils/text.utils"
@@ -17,9 +32,16 @@ import { config } from "@/config/env"
 
 const logger = createLogger(config.LOG_LEVEL, "MessageHandler")
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 export class MessageHandler {
-  private lastContextualReplyAt: Map<string, number> = new Map()
-  private contextualCooldownMs = 60 * 1000 // one minute cooldown between spontaneous replies per chat
+  /**
+   * The bot's own recent replies per chat, used to stop it opening every message
+   * the same way.
+   */
+  private recentReplies: Map<string, string[]> = new Map()
+  /** When each chat last saw any message, for the "how long has it been" note. */
+  private lastMessageAt: Map<string, number> = new Map()
   /**
    * Check access control - returns true if allowed, false if blocked
    */
@@ -161,12 +183,80 @@ export class MessageHandler {
     return shaped
   }
 
-  /** Send text, preferring a native reply so threading is preserved. */
-  private async reply(info: MessageInfo, text: string, mentionedJids?: string[]): Promise<void> {
-    if (info.quotedMessage) {
+  /**
+   * Send text. Quotes only when a person would — see shouldQuote().
+   *
+   * `quotedMessage` is populated for every incoming message, so the old
+   * implementation quote-replied to everything, which is one of the most
+   * visible bot tells in a group.
+   */
+  private async reply(
+    info: MessageInfo,
+    text: string,
+    mentionedJids?: string[],
+    options: { movedOn?: number } = {}
+  ): Promise<void> {
+    const quote =
+      info.quotedMessage &&
+      shouldQuote({
+        isGroup: info.isGroup,
+        messagesSince: options.movedOn ?? 0,
+        wasAddressed: info.isMentioned || info.isReplyToBot,
+      })
+
+    if (quote && info.quotedMessage) {
       await whatsappService.sendReply(info.from, text, info.quotedMessage, mentionedJids)
     } else {
       await whatsappService.sendMessage(info.from, text, mentionedJids)
+    }
+  }
+
+  /**
+   * Deliver a reply the way a person would: a beat to read it, the typing
+   * indicator held for as long as the text would actually take to type, and
+   * longer replies broken into the two or three messages someone would send.
+   *
+   * Falls back to a plain single send when human timing is switched off.
+   */
+  private async sendHumanReply(
+    info: MessageInfo,
+    text: string,
+    mentionedJids: string[],
+    options: { movedOn?: number } = {}
+  ): Promise<void> {
+    const humanTiming = runtimeConfig.get("humanTiming") !== false
+    const remember = (sent: string) => {
+      const recent = this.recentReplies.get(info.from) || []
+      recent.push(sent)
+      this.recentReplies.set(info.from, recent.slice(-5))
+    }
+
+    if (!humanTiming) {
+      await this.reply(info, text, mentionedJids, options)
+      await memoryService.addMessage(info.from, "Bot", text, "Bot")
+      conversationPacer.noteMessage(info.from, true)
+      remember(text)
+      return
+    }
+
+    // Read the message before starting to type.
+    await sleep(readDelayMs(info.text))
+
+    const parts = splitIntoBursts(text)
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      if (i > 0) await sleep(burstGapMs(part))
+
+      await whatsappService.sendPresenceUpdate("composing", info.from)
+      await sleep(typingDelayMs(part))
+      await whatsappService.sendPresenceUpdate("paused", info.from)
+
+      // Only the first part quotes; the rest are follow-ups in the same breath.
+      // Mentions ride on the first message so nobody is pinged repeatedly.
+      await this.reply(info, part, i === 0 ? mentionedJids : undefined, options)
+      await memoryService.addMessage(info.from, "Bot", part, "Bot")
+      conversationPacer.noteMessage(info.from, true)
+      remember(part)
     }
   }
 
@@ -196,6 +286,13 @@ export class MessageHandler {
         await this.handleAdminCommand(info)
         return
       }
+
+      // Pace tracking must see every message, including ones we stay quiet on —
+      // it is what the settle window and participation budget are measured from.
+      conversationPacer.noteMessage(info.from, false)
+      const previousMessageAt = this.lastMessageAt.get(info.from) ?? null
+      this.lastMessageAt.set(info.from, Date.now())
+      void previousMessageAt
 
       // Always remember the message for context, even if we stay quiet.
       // A bare image or voice note has no caption, so record what was sent
@@ -267,26 +364,50 @@ export class MessageHandler {
   }
 
   /**
-   * Contextual group mode: ask the LLM whether it is worth chiming in, and only
-   * then send anything.
+   * Contextual mode: buffer the message and let the pacer decide when — or
+   * whether — the conversation has settled enough to be worth joining.
+   *
+   * Nothing is evaluated here. A burst of ten rapid messages costs one decision
+   * call once the chat goes quiet, not ten calls as it happens.
    */
   private async handleContextualResponse(info: MessageInfo): Promise<void> {
-    // The cooldown is checked before the decision call, not after: that call is
-    // what costs money, so gating it here is what keeps a busy group affordable.
-    // It therefore also pauses reactions for the cooldown window — intentional,
-    // since a bot that reacts to every message is as noisy as one that replies
-    // to every message.
-    const last = this.lastContextualReplyAt.get(info.from) || 0
-    const now = Date.now()
-    if (now - last < this.contextualCooldownMs) return
+    conversationPacer.enqueue(info.from, info, (burst) => {
+      void this.evaluateBurst(burst)
+    })
+  }
 
-    // The decision call itself costs tokens, so the budget gates it as well.
-    if (!(await budgetService.check()).allowed) return
+  /**
+   * Evaluate a settled burst of conversation and decide whether to speak.
+   * `burst` is every message that arrived while the chat was still active.
+   */
+  private async evaluateBurst(burst: MessageInfo[]): Promise<void> {
+    if (!burst.length) return
+    // Answer the thread, so the last message is the anchor for replying.
+    const info = burst[burst.length - 1]
 
     try {
-      const context = await this.buildContext(info)
+      // Re-check the switches: a burst can settle a minute after it started, and
+      // the operator may have disabled the bot in the meantime.
+      if (runtimeConfig.get("botEnabled") !== true) return
+      if (!personaService.isProactive(info.from)) return
+
+      // How much of this chat is already the bot?
+      const budgetCheck = conversationPacer.checkBudget(
+        info.from,
+        personaService.getChattinessForChat(info.from)
+      )
+      if (!budgetCheck.allowed) {
+        logger.debug(`Staying quiet in ${info.from}: ${budgetCheck.reason}`)
+        return
+      }
+
+      // The decision call costs tokens, so the spend ceiling gates it too.
+      if (!(await budgetService.check()).allowed) return
+
+      const pace = conversationPacer.getPace(info.from)
+      const context = await this.buildContext(info, { burst, pace: pace.description })
       const decision = await llmService.askForReactiveReply(
-        info.text,
+        this.describeBurst(burst),
         context,
         await memoryService.getSystemPrompt(info.from)
       )
@@ -302,25 +423,83 @@ export class MessageHandler {
       if (!AdminUtils.isAdmin(info.sender) && !rateLimiter.canMakeRequest(info.sender)) return
 
       const participants = memoryService.getParticipants(info.from)
-      const shaped = this.shapeReply(decision.reply || "", personaService.getMaxReplyChars(info.from))
+      const shaped = this.shapeReply(
+        decision.reply || "",
+        personaService.getMaxReplyChars(info.from)
+      )
       const { text: finalReply, mentionedJids } = parseMentions(shaped, participants)
       if (!finalReply.trim()) return
 
-      await this.reply(info, finalReply, mentionedJids)
-      await memoryService.addMessage(info.from, "Bot", finalReply, "Bot")
-      this.lastContextualReplyAt.set(info.from, now)
+      // Optionally hold the reply a while longer, like someone who put their
+      // phone down and picked it back up.
+      await this.maybeDelayReply(info)
+
+      // The moment may have passed while we were deciding: if the chat moved on
+      // several messages, someone has probably already said it.
+      const movedOn = conversationPacer.messagesSince(info.from, info.receivedAt || 0)
+      if (movedOn >= 4) {
+        logger.debug(`Dropping reply in ${info.from}: conversation moved on (${movedOn} messages)`)
+        return
+      }
+
+      await this.sendHumanReply(info, finalReply, mentionedJids, { movedOn })
     } catch (err) {
       logger.warn("Contextual decision failed", err)
     }
+  }
+
+  /** Render a settled burst as the "message" the decision call reasons about. */
+  private describeBurst(burst: MessageInfo[]): string {
+    if (burst.length === 1) return burst[0].text
+    return burst
+      .map((m) => `${m.senderName || m.sender}: ${m.text}`)
+      .join("\n")
+  }
+
+  /**
+   * Occasional late reply, when enabled: a person does not always answer the
+   * moment they see something.
+   */
+  private async maybeDelayReply(info: MessageInfo): Promise<void> {
+    if (runtimeConfig.get("companionLateReplies") !== true) return
+    // Only sometimes — a bot that is always late is as predictable as one that
+    // is always instant.
+    if (Math.random() > 0.2) return
+    const delay = 60_000 + Math.random() * 120_000
+    logger.debug(`Replying late in ${info.from} (${Math.round(delay / 1000)}s)`)
+    await sleep(delay)
   }
 
   /**
    * Assemble everything the LLM should see for this chat:
    * group metadata, recalled long-term memories, and recent conversation.
    */
-  private async buildContext(info: MessageInfo): Promise<string> {
+  private async buildContext(
+    info: MessageInfo,
+    options: { burst?: MessageInfo[]; pace?: string } = {}
+  ): Promise<string> {
     const sections: string[] = []
     const participants = memoryService.getParticipants(info.from)
+
+    // Awareness a person has for free and a bot otherwise lacks: what time it
+    // is, how long the chat has been quiet, and how busy it is right now.
+    const timing = describeTiming(this.lastMessageAt.get(info.from) ?? null)
+    if (timing) sections.push(timing)
+    if (options.pace) sections.push(options.pace)
+
+    // Stop it opening every message the same way.
+    const variety = avoidRepeatOpeners(this.recentReplies.get(info.from) || [])
+    if (variety) sections.push(variety)
+
+    // When answering a settled burst, say so — the reply should address the
+    // exchange as a whole, not just the final line.
+    if (options.burst && options.burst.length > 1) {
+      sections.push(
+        `${options.burst.length} messages arrived together while you were reading. ` +
+          "Respond to the exchange as a whole — you can pick up more than one point, " +
+          "or reply to whichever part is actually worth answering."
+      )
+    }
 
     // Group metadata + who the bot may tag
     if (info.isGroup) {
@@ -423,8 +602,10 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
 
     logger.info(`Processing AI request from ${info.senderName || info.sender}`)
 
-    // Send typing indicator
-    await whatsappService.sendPresenceUpdate('composing', info.from)
+    // The typing indicator is deliberately NOT shown here. sendHumanReply holds
+    // it for as long as the finished text would actually take to type; showing
+    // it during the API call instead made every reply "typed" for the same
+    // second or two regardless of length, which is a bot tell in itself.
 
     // Companion gets a small token budget so the model cannot produce an essay;
     // the prompt asks for brevity, this makes it structurally hard to ignore.
@@ -433,9 +614,6 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
       maxTokens: maxChars > 0 ? Math.max(64, Math.ceil(maxChars / 3)) : undefined,
     })
 
-    // Stop typing indicator
-    await whatsappService.sendPresenceUpdate('paused', info.from)
-
     // Last resort if the model still overruns: trim on a sentence boundary so
     // the message reads as finished rather than cut off.
     const shaped = this.shapeReply(response, maxChars)
@@ -443,10 +621,8 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
     // Parse mentions in the response
     const { text: finalText, mentionedJids } = parseMentions(shaped, participants)
 
-    // Add bot response to memory
-    await memoryService.addMessage(info.from, "Bot", finalText, "Bot")
-
-    await this.reply(info, finalText, mentionedJids)
+    // sendHumanReply records each part in memory as it is sent.
+    await this.sendHumanReply(info, finalText, mentionedJids)
 
     if (mentionedJids.length > 0) {
       logger.info(`Response included ${mentionedJids.length} mention(s)`)
@@ -517,6 +693,36 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
         await whatsappService.sendMessage(
           info.from,
           `✅ Mode for this chat set to *${PERSONA_LABELS[requested]}*`
+        )
+        break
+      }
+
+      case "!chattiness": {
+        const requested = (args || "").trim().toLowerCase()
+        if (requested === "default") {
+          await personaService.setChattinessForChat(info.from, null)
+          await whatsappService.sendMessage(info.from, "✅ This chat now follows the global chattiness setting")
+          break
+        }
+        if (!isChattiness(requested)) {
+          const current =
+            personaService.getChattinessForChat(info.from) ||
+            runtimeConfig.get("companionChattiness") ||
+            "selective"
+          await whatsappService.sendMessage(
+            info.from,
+            `🗣️ Chattiness here: *${CHATTINESS_LABELS[current as Chattiness]}*\n\n` +
+              "!chattiness selective — chimes in occasionally\n" +
+              "!chattiness present — noticeably part of the conversation\n" +
+              "!chattiness talkative — joins in often\n" +
+              "!chattiness default — follow the global setting"
+          )
+          return
+        }
+        await personaService.setChattinessForChat(info.from, requested)
+        await whatsappService.sendMessage(
+          info.from,
+          `✅ Chattiness for this chat set to *${CHATTINESS_LABELS[requested]}*`
         )
         break
       }

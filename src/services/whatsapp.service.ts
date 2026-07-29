@@ -38,6 +38,8 @@ export interface MessageInfo {
   isMentioned: boolean
   isReplyToBot: boolean
   messageId: string
+  /** When the bot received this message, for "has the chat moved on" checks. */
+  receivedAt: number
   quotedMessage?: proto.IWebMessageInfo // Store original message for replying
   /** Set when the message carries media the bot can interpret. */
   media?: {
@@ -493,6 +495,7 @@ export class WhatsAppService {
         isMentioned,
         isReplyToBot,
         messageId: msg.key.id || "",
+        receivedAt: Date.now(),
         quotedMessage: msg, // Store original message for replying
         media,
       }

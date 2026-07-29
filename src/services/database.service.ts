@@ -861,7 +861,24 @@ export class DatabaseService {
   }
 
   public async clearChatPersona(chatId: string): Promise<void> {
-    await prisma.chatSetting.deleteMany({ where: { chatId } })
+    // Null the column rather than deleting the row: the row may also carry a
+    // chattiness override, which clearing the persona should not discard.
+    await prisma.chatSetting.updateMany({ where: { chatId }, data: { persona: null } })
+  }
+
+  public async setChatChattiness(chatId: string, chattiness: string | null): Promise<void> {
+    await prisma.chatSetting.upsert({
+      where: { chatId },
+      create: { chatId, chattiness },
+      update: { chattiness },
+    })
+  }
+
+  public async getChatChattinessOverrides(): Promise<Record<string, string>> {
+    const rows = await prisma.chatSetting.findMany({ where: { chattiness: { not: null } } })
+    const out: Record<string, string> = {}
+    for (const row of rows) if (row.chattiness) out[row.chatId] = row.chattiness
+    return out
   }
 
   public async getChatPersonaOverrides(): Promise<Record<string, string>> {

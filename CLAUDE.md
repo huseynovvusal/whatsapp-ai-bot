@@ -182,6 +182,35 @@ behalf. `requireCsrf` rejects any non-GET without a matching per-session token (
 compare). The client side wraps `window.fetch` **once** in `admin.ejs` rather than editing
 ~28 call sites, so a newly added fetch cannot accidentally ship without the token.
 
+**Conversational pacing** (`src/services/pacer.service.ts`): Companion does not judge
+messages one at a time. Every non-mention message is buffered and the timer extended while
+people are still talking; only when the chat settles is the **whole burst** evaluated, once.
+That is what produces "several messages went by before it answered", and it also means a
+rapid burst costs one decision call instead of one per message — a several-fold cost cut in
+a busy group. Three knobs compose:
+
+- **Settle window** adapts to pace: ~4s in a quiet chat, up to 35s when busy, with a hard
+  90s ceiling so a chat that never pauses still gets evaluated.
+- **Participation budget** caps the bot's share of a chat — Selective ~10%, Present ~20%,
+  Talkative ~30% (`companionChattiness`, overridable per chat via the Conversations tab or
+  `!chattiness`). Over the ceiling it stays quiet *without* making a decision call.
+- **Pace awareness** puts "this chat is busy right now" into the decision prompt, since an
+  active three-way exchange rarely needs a fourth voice.
+
+Being @mentioned or replied to bypasses all of it — that path is unchanged and prompt. The
+switches are re-checked when the burst settles, not just when it arrives, so disabling the
+bot mid-burst still produces silence.
+
+**Human delivery** (`src/utils/humanize.utils.ts`, `humanTiming`, on by default): the tells
+were never the prose. Previously every reply quote-replied (because `quotedMessage` is
+always populated, the non-quoting branch was dead code) and the typing indicator lasted
+exactly as long as the API call regardless of reply length. Now the bot pauses to "read",
+holds `composing` for as long as the text would genuinely take to type (~45wpm, capped),
+splits longer replies into the two or three messages a person would send, and quotes only
+when the thread has moved on. It also gets the local time, how long the chat has been quiet,
+and a nudge away from reusing its own recent openers. `companionLateReplies` (off by
+default) occasionally holds a reply a minute or two, like someone who put their phone down.
+
 **Memory, in two layers**: *short-term* memory is the recent conversation replayed into every prompt (`memoryService`), bounded by `memoryMessageLimit` and `memoryWindowMs` — both read from runtime config on every use, and both accept **0 meaning "unlimited"/"never expires"**. *Long-term* memory is retrieval (`ragService`): older conversation is chunked, embedded and searched by meaning, so the bot can recall things from months ago without replaying everything. Prefer raising recall over raising the short-term limits — token cost grows with the window but stays flat with retrieval.
 
 **Outbound guard**: `messageHandler.decideResponse()` is the single place that decides whether the bot may speak. It runs *before* any outbound side effect — reply, typing indicator, or emoji reaction — so a disabled setting produces true silence. Previously the 👀 reaction was sent before the private-chat check, so disabling private replies still produced a visible reaction. The error notice in the `catch` is likewise gated on having committed to replying, so failures never leak into chats the bot should be quiet in.
@@ -250,6 +279,7 @@ All commands start with `!` and are processed in `src/handlers/message.handler.t
 - `!clear [all|chatId]` - Clear memory for current chat, specific chat, or all chats
 - `!system <prompt>` - Update the prompt for this chat's personality mode
 - `!mode [assistant|companion]` - Show or set this chat's personality mode
+- `!chattiness [selective|present|talkative|default]` - How much it joins in
 - `!private on|off` - Enable/disable private chat responses
 
 ## Admin Web UI

@@ -15,6 +15,7 @@ import {
   DEFAULT_COMPANION_PROMPT,
 } from "@/services/persona.service"
 import { styleService } from "@/services/style.service"
+import { isChattiness, CHATTINESS_LABELS } from "@/services/pacer.service"
 import { embeddingService } from "@/services/embedding.service"
 import { AdminUtils } from "@/utils/admin.utils"
 import { cleanPhoneNumber } from "@/utils/phone.utils"
@@ -283,6 +284,11 @@ router.post("/save", (req: Request, res: Response) => {
     if ("assistantPrompt" in body) personaService.setPrompt("assistant", String(body.assistantPrompt))
     if ("companionPrompt" in body) personaService.setPrompt("companion", String(body.companionPrompt))
     if ("emojiReactions" in body) runtimeConfig.set("emojiReactions", Boolean(body.emojiReactions))
+    if ("humanTiming" in body) runtimeConfig.set("humanTiming", Boolean(body.humanTiming))
+    if ("companionLateReplies" in body)
+      runtimeConfig.set("companionLateReplies", Boolean(body.companionLateReplies))
+    if ("companionChattiness" in body && isChattiness(body.companionChattiness))
+      runtimeConfig.set("companionChattiness", body.companionChattiness)
     if ("budgetEnabled" in body) runtimeConfig.set("budgetEnabled", Boolean(body.budgetEnabled))
     if ("dailyTokenLimit" in body)
       runtimeConfig.set("dailyTokenLimit", nonNegative(body.dailyTokenLimit, 0))
@@ -392,7 +398,12 @@ router.get("/api/personas", async (_req: Request, res: Response) => {
         companion: DEFAULT_COMPANION_PROMPT,
       },
       overrides: await databaseService.getChatPersonaOverrides(),
+      chattinessLabels: CHATTINESS_LABELS,
+      chattinessOverrides: await databaseService.getChatChattinessOverrides(),
       companion: {
+        chattiness: runtimeConfig.get("companionChattiness") || "selective",
+        lateReplies: runtimeConfig.get("companionLateReplies") === true,
+        humanTiming: runtimeConfig.get("humanTiming") !== false,
         adaptiveStyle: runtimeConfig.get("companionAdaptiveStyle") !== false,
         freeMode: runtimeConfig.get("companionFreeMode") === true,
         maxChars: runtimeConfig.get("companionMaxChars") ?? 350,
@@ -453,6 +464,26 @@ router.get("/api/budget", async (_req: Request, res: Response) => {
   } catch (err) {
     logger.error("Failed to get budget status", err)
     res.status(500).json({ error: "Failed to get budget status" })
+  }
+})
+
+// Per-chat chattiness override ("default" clears it).
+router.post("/api/chats/:chatId/chattiness", async (req: Request, res: Response) => {
+  try {
+    const chatId = decodeURIComponent(String(req.params.chatId))
+    const requested = req.body?.chattiness
+    if (requested === null || requested === "" || requested === "default") {
+      await personaService.setChattinessForChat(chatId, null)
+      return res.json({ success: true, chattiness: null })
+    }
+    if (!isChattiness(requested)) {
+      return res.status(400).json({ error: "chattiness must be selective, present, talkative or null" })
+    }
+    await personaService.setChattinessForChat(chatId, requested)
+    res.json({ success: true, chattiness: requested })
+  } catch (err) {
+    logger.error("Failed to set chat chattiness", err)
+    res.status(500).json({ error: "Failed to set chat chattiness" })
   }
 })
 
