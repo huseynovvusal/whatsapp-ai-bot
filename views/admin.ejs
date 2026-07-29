@@ -873,6 +873,22 @@
     .delta-flat { color: var(--gray-500); font-weight: 600; }
 
     /* Personality modes */
+    .pill {
+      display: inline-block;
+      padding: 0.0625rem 0.375rem;
+      border-radius: 0.25rem;
+      font-size: 0.625rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      background: #eef2ff;
+      color: var(--primary);
+      vertical-align: middle;
+      margin-left: 0.25rem;
+    }
+
+    .pill-warn { background: #fef3c7; color: #92400e; }
+
     .mode-callout {
       padding: 0.875rem 1rem;
       background: #eef2ff;
@@ -1433,6 +1449,47 @@
               <span class="hint">
                 Blank uses the built-in default, which matches the group's tone, keeps replies
                 short, and stays honest if someone sincerely asks whether it's a bot.
+              </span>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Adaptive style <span class="pill">Companion</span></label>
+                <span class="hint">
+                  Reads how each chat actually writes — message length, emoji use, lowercase habits,
+                  shorthand, language — and tells the bot to match that register. Computed from stored
+                  messages, so it costs no extra API calls.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="companionAdaptiveStyle" <%= runtime.companionAdaptiveStyle !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Free mode <span class="pill pill-warn">Companion</span></label>
+                <span class="hint">
+                  Talks like a close friend: swearing, dark humour, sarcasm and real opinions, with no
+                  disclaimers, hedging or moralising. It still reads the room — it drops the banter when
+                  someone is genuinely upset. Note that your AI provider applies its own limits on top of
+                  this, which no prompt can change.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="companionFreeMode" <%= runtime.companionFreeMode ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label>Maximum reply length <span class="pill">Companion</span></label>
+              <input type="number" name="companionMaxChars" min="0" max="4000" value="<%= runtime.companionMaxChars === undefined ? 350 : runtime.companionMaxChars %>">
+              <span class="hint">
+                Characters. Enforced twice: the model gets a matching token budget, and anything still
+                over is trimmed on a sentence boundary. <strong>0 = no limit.</strong> 350 ≈ two chat
+                sentences. Assistant mode is never capped.
               </span>
             </div>
 
@@ -2080,7 +2137,8 @@
 
       // Unchecked boxes are absent from FormData, so they must be set explicitly
       ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses',
-       'ragEnabled', 'ragCrossChat', 'emojiReactions'].forEach(key => {
+       'ragEnabled', 'ragCrossChat', 'emojiReactions',
+       'companionAdaptiveStyle', 'companionFreeMode'].forEach(key => {
         data[key] = formData.has(key);
       });
 

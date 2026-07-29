@@ -13,6 +13,7 @@ import {
   DEFAULT_ASSISTANT_PROMPT,
   DEFAULT_COMPANION_PROMPT,
 } from "@/services/persona.service"
+import { styleService } from "@/services/style.service"
 import { embeddingService } from "@/services/embedding.service"
 import { AdminUtils } from "@/utils/admin.utils"
 import { cleanPhoneNumber } from "@/utils/phone.utils"
@@ -241,6 +242,13 @@ router.post("/save", (req: Request, res: Response) => {
   const body = req.body || {}
 
   try {
+    // 0 is a meaningful value for several settings ("unlimited"), so these are
+    // clamped rather than passed through `||`, which would turn 0 into a default.
+    const nonNegative = (value: unknown, fallback: number): number => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+    }
+
     // Update runtime config keys if present
     if ("enablePrivateChat" in body)
       runtimeConfig.set("enablePrivateChat", Boolean(body.enablePrivateChat))
@@ -267,6 +275,12 @@ router.post("/save", (req: Request, res: Response) => {
     if ("assistantPrompt" in body) personaService.setPrompt("assistant", String(body.assistantPrompt))
     if ("companionPrompt" in body) personaService.setPrompt("companion", String(body.companionPrompt))
     if ("emojiReactions" in body) runtimeConfig.set("emojiReactions", Boolean(body.emojiReactions))
+    if ("companionAdaptiveStyle" in body)
+      runtimeConfig.set("companionAdaptiveStyle", Boolean(body.companionAdaptiveStyle))
+    if ("companionFreeMode" in body)
+      runtimeConfig.set("companionFreeMode", Boolean(body.companionFreeMode))
+    if ("companionMaxChars" in body)
+      runtimeConfig.set("companionMaxChars", Math.max(0, Math.min(4000, nonNegative(body.companionMaxChars, 350))))
     if ("geminiApiKey" in body) runtimeConfig.set("geminiApiKey", String(body.geminiApiKey))
     if ("llmProvider" in body) runtimeConfig.set("llmProvider", String(body.llmProvider) as any)
     if ("openaiApiKey" in body) runtimeConfig.set("openaiApiKey", String(body.openaiApiKey))
@@ -279,12 +293,6 @@ router.post("/save", (req: Request, res: Response) => {
     if ("accessControlMode" in body)
       runtimeConfig.set("accessControlMode", String(body.accessControlMode) as "disabled" | "whitelist" | "blacklist")
 
-    // Memory limits. 0 is meaningful ("unlimited"), so these are clamped rather
-    // than passed through `||`, which would turn 0 back into a default.
-    const nonNegative = (value: unknown, fallback: number): number => {
-      const parsed = Number(value)
-      return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
-    }
     if ("memoryMessageLimit" in body)
       runtimeConfig.set("memoryMessageLimit", nonNegative(body.memoryMessageLimit, 50))
     if ("memoryWindowMs" in body)
@@ -367,10 +375,37 @@ router.get("/api/personas", (_req: Request, res: Response) => {
         companion: DEFAULT_COMPANION_PROMPT,
       },
       overrides: databaseService.getChatPersonaOverrides(),
+      companion: {
+        adaptiveStyle: runtimeConfig.get("companionAdaptiveStyle") !== false,
+        freeMode: runtimeConfig.get("companionFreeMode") === true,
+        maxChars: runtimeConfig.get("companionMaxChars") ?? 350,
+      },
     })
   } catch (err) {
     logger.error("Failed to get personas", err)
     res.status(500).json({ error: "Failed to get personas" })
+  }
+})
+
+// What the bot has learned about how a chat writes, plus the exact prompt that
+// would be sent. Lets an operator see the adaptation rather than guess at it.
+router.get("/api/chats/:chatId/style", (req: Request, res: Response) => {
+  try {
+    const chatId = decodeURIComponent(String(req.params.chatId))
+    const profile = styleService.getProfile(chatId)
+    res.json({
+      chatId,
+      persona: personaService.getPersonaForChat(chatId),
+      adaptive: personaService.isAdaptive(chatId),
+      freeMode: personaService.isFreeMode(chatId),
+      maxChars: personaService.getMaxReplyChars(chatId),
+      profile,
+      guidance: styleService.describe(profile),
+      composedPrompt: personaService.getPromptForChat(chatId),
+    })
+  } catch (err) {
+    logger.error("Failed to get chat style", err)
+    res.status(500).json({ error: "Failed to get chat style" })
   }
 })
 

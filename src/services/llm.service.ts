@@ -79,7 +79,12 @@ export class LLMService {
   /**
    * Ask the LLM with user text and context
    */
-  public async askLLM(userText: string, context: string, systemPrompt: string): Promise<string> {
+  public async askLLM(
+    userText: string,
+    context: string,
+    systemPrompt: string,
+    options: { maxTokens?: number } = {}
+  ): Promise<string> {
     try {
       logger.debug(`Asking LLM with user text: "${userText.substring(0, 50)}..."`)
 
@@ -99,7 +104,9 @@ Assistant:`
             { role: "user", content: `${context}\n\n${userText}` },
           ],
           temperature: 0.6,
-          max_tokens: 1024,
+          // A tight cap is the enforcement behind the prompt's length rule:
+          // Companion passes a small budget so the model cannot ramble.
+          max_tokens: options.maxTokens || 1024,
         })
         const answer = res.choices?.[0]?.message?.content || ""
         recordUsage(res.usage?.total_tokens || 0)
@@ -109,7 +116,10 @@ Assistant:`
 
       // Gemini path
       if (!this.geminiModel) throw new Error("Gemini model not initialized")
-      const result = await this.geminiModel.generateContent(fullPrompt)
+      const result = await this.geminiModel.generateContent({
+        contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+        generationConfig: { maxOutputTokens: options.maxTokens || 1024 },
+      })
       const response = await result.response
       const answer = response.text()
       recordUsage(response.usageMetadata?.totalTokenCount || 0)

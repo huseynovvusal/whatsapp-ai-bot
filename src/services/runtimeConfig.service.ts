@@ -46,6 +46,12 @@ export interface RuntimeConfigSchema {
   companionPrompt?: string
   /** Let the bot react with emoji. */
   emojiReactions?: boolean
+  /** Companion: mirror the chat's own writing style. */
+  companionAdaptiveStyle?: boolean
+  /** Companion: drop hedging/moralising and allow swearing and edgy humour. */
+  companionFreeMode?: boolean
+  /** Companion: reply length ceiling in characters. 0 = no limit. */
+  companionMaxChars?: number
 }
 
 export class RuntimeConfigService {
@@ -85,6 +91,9 @@ export class RuntimeConfigService {
       assistantPrompt: "",
       companionPrompt: "",
       emojiReactions: true,
+      companionAdaptiveStyle: true,
+      companionFreeMode: false,
+      companionMaxChars: 350,
     }
 
     this.loadFromFile()

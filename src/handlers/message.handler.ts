@@ -10,6 +10,7 @@ import { AdminUtils } from "@/utils/admin.utils"
 import { ragService } from "@/services/rag.service"
 import { personaService, PERSONA_LABELS } from "@/services/persona.service"
 import { sanitiseEmoji } from "@/utils/emoji.utils"
+import { trimToLength } from "@/utils/text.utils"
 import { createLogger } from "@/lib/logger"
 import { config } from "@/config/env"
 
@@ -146,6 +147,19 @@ export class MessageHandler {
     return "👀"
   }
 
+  /**
+   * Enforce the reply-length ceiling. Returns the text unchanged when there is
+   * no limit or it already fits.
+   */
+  private shapeReply(text: string, maxChars: number): string {
+    if (!maxChars || maxChars <= 0) return text
+    const shaped = trimToLength(text, maxChars)
+    if (shaped.length < text.trim().length) {
+      logger.debug(`Trimmed reply from ${text.trim().length} to ${shaped.length} chars`)
+    }
+    return shaped
+  }
+
   /** Send text, preferring a native reply so threading is preserved. */
   private async reply(info: MessageInfo, text: string, mentionedJids?: string[]): Promise<void> {
     if (info.quotedMessage) {
@@ -260,7 +274,8 @@ export class MessageHandler {
       if (!AdminUtils.isAdmin(info.sender) && !rateLimiter.canMakeRequest(info.sender)) return
 
       const participants = memoryService.getParticipants(info.from)
-      const { text: finalReply, mentionedJids } = parseMentions(decision.reply || "", participants)
+      const shaped = this.shapeReply(decision.reply || "", personaService.getMaxReplyChars(info.from))
+      const { text: finalReply, mentionedJids } = parseMentions(shaped, participants)
       if (!finalReply.trim()) return
 
       await this.reply(info, finalReply, mentionedJids)
@@ -338,14 +353,22 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
     // Send typing indicator
     await whatsappService.sendPresenceUpdate('composing', info.from)
 
-    // Get AI response
-    const response = await llmService.askLLM(cleanText, context, systemPrompt)
+    // Companion gets a small token budget so the model cannot produce an essay;
+    // the prompt asks for brevity, this makes it structurally hard to ignore.
+    const maxChars = personaService.getMaxReplyChars(info.from)
+    const response = await llmService.askLLM(cleanText, context, systemPrompt, {
+      maxTokens: maxChars > 0 ? Math.max(64, Math.ceil(maxChars / 3)) : undefined,
+    })
 
     // Stop typing indicator
     await whatsappService.sendPresenceUpdate('paused', info.from)
 
+    // Last resort if the model still overruns: trim on a sentence boundary so
+    // the message reads as finished rather than cut off.
+    const shaped = this.shapeReply(response, maxChars)
+
     // Parse mentions in the response
-    const { text: finalText, mentionedJids } = parseMentions(response, participants)
+    const { text: finalText, mentionedJids } = parseMentions(shaped, participants)
 
     // Add bot response to memory
     await memoryService.addMessage(info.from, "Bot", finalText, "Bot")

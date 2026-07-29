@@ -107,6 +107,29 @@ every mention; Assistant keeps a neutral 👀. Values are validated by
 again in `react()` immediately before sending, since models reply "none" or ":)" often
 enough that the send site cannot trust its caller.
 
+**Companion modifiers** — three settings that only apply to chats in Companion mode:
+
+- **Adaptive style** (`companionAdaptiveStyle`, on by default). `styleService` profiles how a
+  chat actually writes — message length, emoji rate, lowercase habits, chat shorthand,
+  non-Latin script — from messages already in SQLite, and renders it as prompt guidance.
+  **No LLM call**, so matching a group's voice costs nothing per message; profiles are cached
+  10 minutes. The bot's own messages are excluded from the sample so it mirrors the people in
+  the chat rather than drifting toward its own prior style. The guidance describes the
+  register instead of supplying phrases to copy — a bot parroting exact wording reads as
+  mockery, not rapport.
+- **Free mode** (`companionFreeMode`, off by default). A register control: allows swearing,
+  dark humour and blunt opinions, and removes hedging, disclaimers and moralising. It keeps
+  one "read the room" clause, since dropping the banter when someone is genuinely upset is
+  what a real friend does. It is a prompt, so it cannot change what the provider itself
+  refuses — that happens server-side, above any prompt.
+- **Maximum reply length** (`companionMaxChars`, default 350; 0 = no limit). Enforced twice:
+  `askLLM` receives a matching `maxTokens` budget (both providers), and anything still over is
+  trimmed on a sentence boundary by `trimToLength()`. Assistant mode is never capped.
+
+`personaService.getPromptForChat()` composes these in a deliberate order: base prompt → free
+mode → adapted style → length rule. The length rule goes last because it is the hardest
+instruction for a model to hold, and recency helps.
+
 **Memory, in two layers**: *short-term* memory is the recent conversation replayed into every prompt (`memoryService`), bounded by `memoryMessageLimit` and `memoryWindowMs` — both read from runtime config on every use, and both accept **0 meaning "unlimited"/"never expires"**. *Long-term* memory is retrieval (`ragService`): older conversation is chunked, embedded and searched by meaning, so the bot can recall things from months ago without replaying everything. Prefer raising recall over raising the short-term limits — token cost grows with the window but stays flat with retrieval.
 
 **Outbound guard**: `messageHandler.decideResponse()` is the single place that decides whether the bot may speak. It runs *before* any outbound side effect — reply, typing indicator, or emoji reaction — so a disabled setting produces true silence. Previously the 👀 reaction was sent before the private-chat check, so disabling private replies still produced a visible reaction. The error notice in the `catch` is likewise gated on having committed to replying, so failures never leak into chats the bot should be quiet in.

@@ -2,6 +2,7 @@ import { config } from "@/config/env"
 import { createLogger } from "@/lib/logger"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
+import { styleService } from "@/services/style.service"
 
 const logger = createLogger(config.LOG_LEVEL, "PersonaService")
 
@@ -38,6 +39,36 @@ DO: react to what was actually said, use people's names naturally, have an opini
 DO NOT: open with "Certainly!" or "As an AI", restate the question before answering, over-explain, or end messages with an offer to help. Do not reply to everything — it is fine to stay quiet.
 
 HONESTY: you should sound like a person, but if someone sincerely asks whether you are a bot or an AI, tell them plainly that you are. Never claim to be a specific real person, and never claim to have done something in the physical world.`
+
+/**
+ * Appended in Companion mode when Free mode is on.
+ *
+ * This is a register control: it stops the model hedging, moralising and
+ * sanitising its humour. It cannot change what the provider itself refuses —
+ * that happens server-side, above any prompt.
+ */
+export const FREE_MODE_FRAGMENT = `UNFILTERED: talk the way close friends actually talk to each other.
+
+- Swear naturally if the group does. Do not censor words, star them out, or soften them.
+- Dark humour, sarcasm, teasing and banter are all fine. Roast people who are clearly up for it.
+- Have real opinions and take sides. Disagree, argue back, call things stupid if you think they are.
+- No disclaimers, no hedging, no "as an AI", no moralising, and no unsolicited safety advice.
+- Never append a warning or caveat to a joke. A joke explained is a joke ruined.
+
+The one thing a good friend still does: read the room. If someone is genuinely upset or being sincere, drop the bit and be straight with them. Banter only works between people who are both enjoying it.`
+
+/**
+ * Length discipline. The clearest tell that a chat message came from a bot is
+ * that it is too long and too tidy, so this is stated as the top priority.
+ */
+export const LENGTH_FRAGMENT = `LENGTH — this matters more than anything else here:
+
+- One or two short sentences. That is the whole message, most of the time.
+- Never write paragraphs. No bullet points, no headings, no structuring a chat message like a document.
+- Do not restate the question, do not summarise yourself, and do not end with an offer to help.
+- If something really needs detail, give the short answer first and let them ask.
+
+A long, well-organised reply is the single most robotic thing you can do in a group chat.`
 
 /**
  * Resolves which personality applies to a chat, and the prompt that goes with it.
@@ -89,9 +120,50 @@ export class PersonaService {
     logger.info(`${PERSONA_LABELS[persona]} prompt updated`)
   }
 
-  /** The prompt a given chat should be answered with. */
+  /** Free mode strips the bot's stylistic primness. Companion only. */
+  public isFreeMode(chatId?: string): boolean {
+    if (this.getPersonaForChat(chatId) !== "companion") return false
+    return runtimeConfig.get("companionFreeMode") === true
+  }
+
+  /** Whether Companion should mirror the chat's own writing style. */
+  public isAdaptive(chatId?: string): boolean {
+    if (this.getPersonaForChat(chatId) !== "companion") return false
+    return runtimeConfig.get("companionAdaptiveStyle") !== false
+  }
+
+  /** Reply length ceiling in characters for this chat. 0 = no limit. */
+  public getMaxReplyChars(chatId?: string): number {
+    if (this.getPersonaForChat(chatId) !== "companion") return 0
+    const configured = runtimeConfig.get("companionMaxChars")
+    const value = configured === undefined ? 350 : Number(configured)
+    return Number.isFinite(value) && value >= 0 ? value : 350
+  }
+
+  /**
+   * The full system prompt for a chat: the persona's base prompt, plus the
+   * Companion modifiers that apply.
+   *
+   * Order matters. The base prompt sets the voice; free mode and the adapted
+   * style refine it; the length rule goes last so it is the most recent
+   * instruction the model reads — length is the hardest rule to hold.
+   */
   public getPromptForChat(chatId?: string): string {
-    return this.getPrompt(this.getPersonaForChat(chatId))
+    const persona = this.getPersonaForChat(chatId)
+    const sections = [this.getPrompt(persona)]
+
+    if (persona === "companion") {
+      if (this.isFreeMode(chatId)) sections.push(FREE_MODE_FRAGMENT)
+
+      if (chatId && this.isAdaptive(chatId)) {
+        const style = styleService.getStyleGuidance(chatId)
+        if (style) sections.push(style)
+      }
+
+      sections.push(LENGTH_FRAGMENT)
+    }
+
+    return sections.join("\n\n")
   }
 
   /**
