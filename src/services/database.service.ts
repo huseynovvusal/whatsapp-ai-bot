@@ -688,28 +688,43 @@ export class DatabaseService {
 
   // ============= ANALYTICS OPERATIONS =============
 
+  /**
+   * Accumulate counters for a date.
+   *
+   * `totalMessages`/`apiCalls`/`tokensUsed` add to what is there. `totalUsers`
+   * and `totalConversations` are snapshots, so they are only overwritten when a
+   * value is actually supplied — passing NULL leaves the stored value alone.
+   * (The previous version used `COALESCE(excluded.x, x)` against a value that had
+   * already been defaulted to 0, so COALESCE never saw NULL and every incoming
+   * message reset both columns to zero.)
+   */
   public updateAnalytics(date: string, updates: Partial<DbAnalytics>): void {
     const stmt = this.db.prepare(`
       INSERT INTO analytics (date, totalMessages, totalUsers, totalConversations, apiCalls, tokensUsed)
-      VALUES (?, ?, ?, ?, ?, ?)
+      VALUES (
+        @date,
+        COALESCE(@messages, 0),
+        COALESCE(@users, 0),
+        COALESCE(@conversations, 0),
+        COALESCE(@apiCalls, 0),
+        COALESCE(@tokens, 0)
+      )
       ON CONFLICT(date) DO UPDATE SET
-        totalMessages = totalMessages + ?,
-        totalUsers = COALESCE(excluded.totalUsers, totalUsers),
-        totalConversations = COALESCE(excluded.totalConversations, totalConversations),
-        apiCalls = apiCalls + ?,
-        tokensUsed = tokensUsed + ?
+        totalMessages = totalMessages + COALESCE(@messages, 0),
+        totalUsers = CASE WHEN @users IS NULL THEN totalUsers ELSE @users END,
+        totalConversations =
+          CASE WHEN @conversations IS NULL THEN totalConversations ELSE @conversations END,
+        apiCalls = apiCalls + COALESCE(@apiCalls, 0),
+        tokensUsed = tokensUsed + COALESCE(@tokens, 0)
     `)
-    stmt.run(
+    stmt.run({
       date,
-      updates.totalMessages || 0,
-      updates.totalUsers || 0,
-      updates.totalConversations || 0,
-      updates.apiCalls || 0,
-      updates.tokensUsed || 0,
-      updates.totalMessages || 0,
-      updates.apiCalls || 0,
-      updates.tokensUsed || 0
-    )
+      messages: updates.totalMessages ?? null,
+      users: updates.totalUsers ?? null,
+      conversations: updates.totalConversations ?? null,
+      apiCalls: updates.apiCalls ?? null,
+      tokens: updates.tokensUsed ?? null,
+    })
   }
 
   public getAnalytics(startDate: string, endDate: string): DbAnalytics[] {

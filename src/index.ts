@@ -22,6 +22,16 @@ async function main() {
     app.use(express.json())
     app.use(express.urlencoded({ extended: true }))
 
+    // A predictable session secret lets anyone forge an admin cookie, so the
+    // default is refused in production rather than used silently.
+    if (!process.env.SESSION_SECRET) {
+      const msg = "SESSION_SECRET is not set — admin sessions can be forged."
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(`${msg} Refusing to start in production.`)
+      }
+      logger.warn(`⚠️  ${msg} Set it before deploying.`)
+    }
+
     // Session middleware for authentication
     app.use(
       session({

@@ -130,6 +130,32 @@ enough that the send site cannot trust its caller.
 mode → adapted style → length rule. The length rule goes last because it is the hardest
 instruction for a model to hold, and recency helps.
 
+**Live traffic only**: `messages.upsert` fires for both new messages (`type: "notify"`)
+and history sync (`type: "append"`). Only `notify` is handled — Baileys replays older
+messages on connect and after every reconnect, and answering those would make the bot blast
+replies into old conversations. Two further guards back this up: recently-seen message IDs
+are remembered (bounded at 1000) so a redelivery is not answered twice, and anything more
+than 5 minutes old is treated as replay regardless of type.
+
+**Provider resilience**: `llmService.withRetry()` retries rate limits, timeouts and provider
+outages up to 3 times with exponential backoff plus jitter. Authentication failures are *not*
+retried — they cannot fix themselves, and retrying only delays telling the operator. Failures
+become an `LLMError` carrying a user-facing message, so a chat sees "I'm being rate-limited,
+try again in a moment" or "my credentials are not working" instead of a blanket
+"something went wrong". Reconnects to WhatsApp use exponential backoff too (5s doubling to a
+5-minute cap, reset on a successful connection).
+
+**Analytics counters vs snapshots**: in `updateAnalytics`, `totalMessages`/`apiCalls`/
+`tokensUsed` accumulate, while `totalUsers`/`totalConversations` are snapshots that are only
+written when a value is supplied. Passing them through `COALESCE(excluded.x, x)` against an
+already-defaulted 0 meant COALESCE never saw NULL, so every incoming message silently reset
+both columns to zero.
+
+**Admin panel security**: the login route throttles failed attempts (5 per address, then a
+15-minute lockout) since it is the only unauthenticated endpoint; the session is regenerated
+on login to prevent fixation; and the insecure defaults (`admin123`, the fallback session
+secret) log a warning in development and **refuse to start in production**.
+
 **Memory, in two layers**: *short-term* memory is the recent conversation replayed into every prompt (`memoryService`), bounded by `memoryMessageLimit` and `memoryWindowMs` — both read from runtime config on every use, and both accept **0 meaning "unlimited"/"never expires"**. *Long-term* memory is retrieval (`ragService`): older conversation is chunked, embedded and searched by meaning, so the bot can recall things from months ago without replaying everything. Prefer raising recall over raising the short-term limits — token cost grows with the window but stays flat with retrieval.
 
 **Outbound guard**: `messageHandler.decideResponse()` is the single place that decides whether the bot may speak. It runs *before* any outbound side effect — reply, typing indicator, or emoji reaction — so a disabled setting produces true silence. Previously the 👀 reaction was sent before the private-chat check, so disabling private replies still produced a visible reaction. The error notice in the `catch` is likewise gated on having committed to replying, so failures never leak into chats the bot should be quiet in.

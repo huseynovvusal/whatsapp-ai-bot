@@ -21,6 +21,55 @@ function recordUsage(tokensUsed: number = 0): void {
   }
 }
 
+/** Error carrying a user-facing explanation, so chats get something useful. */
+export class LLMError extends Error {
+  constructor(
+    message: string,
+    public readonly userMessage: string,
+    public readonly retryable: boolean
+  ) {
+    super(message)
+    this.name = "LLMError"
+  }
+}
+
+/** Classify a provider error so we know whether retrying can help. */
+function classifyError(error: unknown): { status?: number; retryable: boolean; user: string } {
+  const err = error as { status?: number; code?: string; message?: string }
+  const status = typeof err?.status === "number" ? err.status : undefined
+  const text = String(err?.message || err?.code || "").toLowerCase()
+
+  const looksRateLimited = status === 429 || text.includes("rate limit") || text.includes("quota")
+  const looksOverloaded =
+    status === 503 || status === 502 || status === 500 || text.includes("overloaded")
+  const looksTimeout =
+    text.includes("timeout") || text.includes("etimedout") || text.includes("econnreset") ||
+    text.includes("socket hang up") || text.includes("fetch failed")
+  const looksAuth = status === 401 || status === 403 || text.includes("api key")
+
+  if (looksRateLimited) {
+    return { status, retryable: true, user: "⏳ I'm being rate-limited right now. Try again in a moment." }
+  }
+  if (looksOverloaded || looksTimeout) {
+    return { status, retryable: true, user: "⚠️ The AI service is not responding. Try again shortly." }
+  }
+  if (looksAuth) {
+    // Retrying a bad key just burns time; surface it so the operator fixes it.
+    return { status, retryable: false, user: "🔑 My AI credentials are not working. An admin needs to check the API key." }
+  }
+  return { status, retryable: false, user: "❌ Sorry, something went wrong. Please try again." }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** The part of a Gemini result this service actually reads. */
+interface GeminiResult {
+  response: Promise<{
+    text(): string
+    usageMetadata?: { totalTokenCount?: number }
+  }>
+}
+
 export class LLMService {
   private provider: "openai" | "gemini" = "gemini"
   // Gemini
@@ -32,6 +81,45 @@ export class LLMService {
 
   constructor() {
     this.initialize()
+  }
+
+  /**
+   * Run a provider call with bounded retries.
+   *
+   * Rate limits, timeouts and provider outages are transient — retrying with
+   * backoff turns most of them into a slightly slow reply instead of a visible
+   * failure. Authentication errors are not retried, since they cannot resolve
+   * themselves and retrying only delays the real message to the operator.
+   */
+  private async withRetry<T>(label: string, run: () => Promise<T>): Promise<T> {
+    const maxAttempts = 3
+    let lastError: unknown
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await run()
+      } catch (error) {
+        lastError = error
+        const { status, retryable, user } = classifyError(error)
+
+        if (!retryable || attempt === maxAttempts) {
+          logger.error(
+            `${label} failed after ${attempt} attempt(s)${status ? ` (status ${status})` : ""}`,
+            error
+          )
+          throw new LLMError(`${label} failed`, user, retryable)
+        }
+
+        // Exponential backoff with jitter, so simultaneous chats do not retry in lockstep.
+        const delay = Math.round(500 * Math.pow(2, attempt - 1) * (1 + Math.random() * 0.3))
+        logger.warn(
+          `${label} attempt ${attempt}/${maxAttempts} failed${status ? ` (status ${status})` : ""}; retrying in ${delay}ms`
+        )
+        await sleep(delay)
+      }
+    }
+
+    throw lastError
   }
 
   /**
@@ -97,17 +185,19 @@ User: ${userText}
 Assistant:`
 
       if (this.provider === "openai" && this.openai && this.openaiModel) {
-        const res = await this.openai.chat.completions.create({
-          model: this.openaiModel,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: `${context}\n\n${userText}` },
-          ],
-          temperature: 0.6,
-          // A tight cap is the enforcement behind the prompt's length rule:
-          // Companion passes a small budget so the model cannot ramble.
-          max_tokens: options.maxTokens || 1024,
-        })
+        const res = await this.withRetry("OpenAI completion", () =>
+          this.openai!.chat.completions.create({
+            model: this.openaiModel!,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `${context}\n\n${userText}` },
+            ],
+            temperature: 0.6,
+            // A tight cap is the enforcement behind the prompt's length rule:
+            // Companion passes a small budget so the model cannot ramble.
+            max_tokens: options.maxTokens || 1024,
+          })
+        )
         const answer = res.choices?.[0]?.message?.content || ""
         recordUsage(res.usage?.total_tokens || 0)
         logger.info("LLM response received successfully (OpenAI)")
@@ -116,18 +206,22 @@ Assistant:`
 
       // Gemini path
       if (!this.geminiModel) throw new Error("Gemini model not initialized")
-      const result = await this.geminiModel.generateContent({
-        contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-        generationConfig: { maxOutputTokens: options.maxTokens || 1024 },
-      })
+      const result = await this.withRetry<GeminiResult>("Gemini completion", () =>
+        this.geminiModel.generateContent({
+          contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+          generationConfig: { maxOutputTokens: options.maxTokens || 1024 },
+        })
+      )
       const response = await result.response
       const answer = response.text()
       recordUsage(response.usageMetadata?.totalTokenCount || 0)
       logger.info("LLM response received successfully (Gemini)")
       return answer
     } catch (error) {
+      // withRetry already logged and classified; keep its user-facing message.
+      if (error instanceof LLMError) throw error
       logger.error("Error calling LLM:", error)
-      throw new Error("Failed to get response from AI. Please try again.")
+      throw new LLMError("askLLM failed", classifyError(error).user, false)
     }
   }
 

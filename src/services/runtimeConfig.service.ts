@@ -147,7 +147,9 @@ export class RuntimeConfigService {
   private saveToFile(): void {
     try {
       fs.writeFileSync(this.filePath, JSON.stringify(this.runtimeConfig, null, 2), "utf-8")
-      logger.info("Saved runtime config to file")
+      // debug, not info: this fires on every single setting change and would
+      // otherwise flood the admin Logs tab.
+      logger.debug("Saved runtime config to file")
     } catch (err) {
       logger.error("Error saving runtime config file:", err)
     }

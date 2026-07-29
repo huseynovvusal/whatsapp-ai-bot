@@ -19,6 +19,11 @@ import path from "path"
 
 const logger = createLogger(config.LOG_LEVEL, "WhatsAppService")
 
+/** How many recent message IDs to remember for duplicate suppression. */
+const MAX_TRACKED_MESSAGE_IDS = 1000
+/** Messages older than this are treated as replay, never as live traffic. */
+const STALE_MESSAGE_MS = 5 * 60 * 1000
+
 export interface MessageInfo {
   from: string
   sender: string
@@ -37,8 +42,13 @@ export type MessageHandler = (info: MessageInfo) => Promise<void>
 export class WhatsAppService {
   private sock: WASocket | null = null
   private messageHandler: MessageHandler | null = null
-  private reconnectDelayMs = 5000
   private reconnecting = false
+  /** Consecutive failed reconnects, used for exponential backoff. */
+  private reconnectAttempts = 0
+  /** Recently handled message IDs, for duplicate suppression. */
+  private processedMessageIds: Set<string> = new Set()
+  /** Insertion order for the above, so the set can be bounded. */
+  private processedMessageOrder: string[] = []
 
   /**
    * Start WhatsApp connection
@@ -95,7 +105,18 @@ export class WhatsAppService {
             return
           }
           this.reconnecting = true
-          wsService.log("info", `Reconnecting in ${this.reconnectDelayMs / 1000} seconds...`, "WhatsApp")
+          // Exponential backoff, capped. A fixed short delay hammers WhatsApp
+          // during an outage and can get the session throttled or banned.
+          this.reconnectAttempts++
+          const delay = Math.min(
+            5000 * Math.pow(2, this.reconnectAttempts - 1),
+            5 * 60 * 1000
+          )
+          wsService.log(
+            "info",
+            `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts})`,
+            "WhatsApp"
+          )
           setTimeout(async () => {
             this.reconnecting = false
             try {
@@ -104,10 +125,12 @@ export class WhatsAppService {
               logger.error("Reconnect attempt failed:", err)
               wsService.log("error", `Reconnect attempt failed: ${err}`, "WhatsApp")
             }
-          }, this.reconnectDelayMs)
+          }, delay)
         }
       } else if (connection === "open") {
         this.reconnecting = false
+        // A successful connection resets the backoff ladder.
+        this.reconnectAttempts = 0
         const phoneNumber = this.sock?.user?.id || undefined
         const displayName = this.sock?.user?.name || phoneNumber
 
@@ -122,7 +145,14 @@ export class WhatsAppService {
     })
 
     // Handle incoming messages
-    this.sock.ev.on("messages.upsert", async ({ messages }) => {
+    this.sock.ev.on("messages.upsert", async ({ messages, type }) => {
+      // Only "notify" means a message arriving now. "append" is history sync —
+      // Baileys replays older messages on connect and after a reconnect, and
+      // answering those would make the bot blast replies to old conversations.
+      if (type !== "notify") {
+        logger.debug(`Ignoring ${messages.length} message(s) of type "${type}" (not live traffic)`)
+        return
+      }
       for (const msg of messages) {
         await this.handleIncomingMessage(msg)
       }
@@ -393,6 +423,32 @@ export class WhatsAppService {
 
       // Ignore messages from self
       if (msg.key.fromMe) return
+
+      // Baileys can deliver the same message more than once (reconnects, retries,
+      // multi-device fan-out). Without this the bot answers twice.
+      const messageId = msg.key.id
+      if (messageId) {
+        if (this.processedMessageIds.has(messageId)) {
+          logger.debug(`Skipping duplicate delivery of message ${messageId}`)
+          return
+        }
+        this.processedMessageIds.add(messageId)
+        this.processedMessageOrder.push(messageId)
+        if (this.processedMessageOrder.length > MAX_TRACKED_MESSAGE_IDS) {
+          const evicted = this.processedMessageOrder.shift()
+          if (evicted) this.processedMessageIds.delete(evicted)
+        }
+      }
+
+      // Belt and braces alongside the "notify" filter: refuse anything noticeably
+      // older than now, so a replay can never produce a live-looking reply.
+      const sentAt = Number(msg.messageTimestamp) * 1000
+      if (sentAt && Date.now() - sentAt > STALE_MESSAGE_MS) {
+        logger.debug(
+          `Ignoring stale message ${messageId} (${Math.round((Date.now() - sentAt) / 1000)}s old)`
+        )
+        return
+      }
 
       const from = msg.key.remoteJid
       const isGroup = isJidGroup(from)

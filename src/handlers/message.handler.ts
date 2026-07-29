@@ -2,7 +2,7 @@ import { MessageInfo, whatsappService } from "@/services/whatsapp.service"
 import { cleanPhoneNumber as cleanPhoneFromJid } from "@/utils/phone.utils"
 import { parseMentions } from "@/utils/mention.utils"
 import { memoryService } from "@/services/memory.service"
-import { llmService } from "@/services/llm.service"
+import { llmService, LLMError } from "@/services/llm.service"
 import { rateLimiter } from "@/services/ratelimit.service"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
@@ -231,10 +231,15 @@ export class MessageHandler {
       logger.error("Error in message handler:", error)
       if (!committedToReply) return
       try {
-        await whatsappService.sendMessage(
-          info.from,
-          "❌ Sorry, something went wrong. Please try again."
-        )
+        // A classified provider failure explains itself ("rate-limited",
+        // "credentials not working"); anything else falls back to the generic
+        // notice. A user who knows to wait 30s is better served than one who
+        // only ever sees "something went wrong".
+        const notice =
+          error instanceof LLMError
+            ? error.userMessage
+            : "❌ Sorry, something went wrong. Please try again."
+        await whatsappService.sendMessage(info.from, notice)
       } catch (sendErr) {
         logger.error("Failed to deliver the error notice", sendErr)
       }

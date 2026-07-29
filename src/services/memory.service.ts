@@ -1,5 +1,6 @@
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { personaService } from "@/services/persona.service"
+import { styleService } from "@/services/style.service"
 import { whatsappService } from "@/services/whatsapp.service"
 import { userProfileService } from "@/services/userProfile.service"
 import { databaseService } from "@/services/database.service"
@@ -160,6 +161,10 @@ export class MemoryService {
    * Clear all messages from memory
    */
   public clear(chatId?: string): void {
+    // The style profile is derived from this chat's messages, so it must not
+    // outlive them.
+    styleService.invalidate(chatId)
+
     if (chatId) {
       const old = this.conversations.get(chatId) || []
       this.conversations.delete(chatId)
