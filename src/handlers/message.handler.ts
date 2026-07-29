@@ -8,6 +8,7 @@ import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
 import { AdminUtils } from "@/utils/admin.utils"
 import { ragService } from "@/services/rag.service"
+import { budgetService } from "@/services/budget.service"
 import { personaService, PERSONA_LABELS } from "@/services/persona.service"
 import { sanitiseEmoji } from "@/utils/emoji.utils"
 import { trimToLength } from "@/utils/text.utils"
@@ -197,7 +198,18 @@ export class MessageHandler {
       }
 
       // Always remember the message for context, even if we stay quiet.
-      await memoryService.addMessage(info.from, info.sender, info.text, info.senderName)
+      // A bare image or voice note has no caption, so record what was sent
+      // rather than storing an empty line that reads as a gap in the history.
+      const remembered =
+        info.text.trim() ||
+        (info.media
+          ? info.media.kind === "image"
+            ? "[sent an image]"
+            : info.media.isVoiceNote
+              ? "[sent a voice message]"
+              : "[sent an audio clip]"
+          : info.text)
+      await memoryService.addMessage(info.from, info.sender, remembered, info.senderName)
 
       const decision = this.decideResponse(info)
       if (!decision.respond) {
@@ -214,6 +226,14 @@ export class MessageHandler {
 
       // From here on the bot has committed to replying in this chat.
       committedToReply = true
+
+      // Spending ceiling is checked before the rate limit so an exhausted budget
+      // reports the real reason rather than looking like ordinary throttling.
+      const budget = budgetService.check()
+      if (!budget.allowed) {
+        await this.reply(info, budget.reason!)
+        return
+      }
 
       const limitMessage = this.rateLimitMessage(info)
       if (limitMessage) {
@@ -259,6 +279,9 @@ export class MessageHandler {
     const last = this.lastContextualReplyAt.get(info.from) || 0
     const now = Date.now()
     if (now - last < this.contextualCooldownMs) return
+
+    // The decision call itself costs tokens, so the budget gates it as well.
+    if (!budgetService.check().allowed) return
 
     try {
       const context = await this.buildContext(info)
@@ -342,6 +365,47 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
   }
 
   /**
+   * Turn attached media into text the rest of the pipeline can use: an image
+   * becomes a description, a voice note becomes its transcript.
+   *
+   * Returns the effective message text. Media is only downloaded here — after
+   * the bot has already decided it is going to reply — so unanswered messages
+   * cost no bandwidth.
+   */
+  private async resolveMedia(info: MessageInfo): Promise<string> {
+    if (!info.media) return info.text
+
+    const caption = info.text.trim()
+
+    try {
+      const buffer = await info.media.download()
+
+      if (info.media.kind === "image") {
+        const question = caption || "Describe this image."
+        const description = await llmService.analyzeImage(buffer, question, info.media.mimeType)
+        logger.info(`Image interpreted (${buffer.length} bytes)`)
+        // Both parts are kept: the caption is what was asked, the description is
+        // what the picture shows, and the reply usually needs both.
+        return caption
+          ? `${caption}\n\n[Image attached. What it shows: ${description}]`
+          : `[The user sent an image. What it shows: ${description}]\n\nRespond to the image.`
+      }
+
+      const transcript = await llmService.transcribeAudio(buffer, info.media.mimeType)
+      if (!transcript) {
+        logger.info("Audio contained no intelligible speech")
+        return caption || "[The user sent a voice message with no intelligible speech.]"
+      }
+      logger.info(`Voice message transcribed (${transcript.length} chars)`)
+      return caption ? `${caption}\n\n[Voice message: "${transcript}"]` : transcript
+    } catch (err) {
+      // A media failure should degrade to a normal reply, not kill the response.
+      logger.warn(`Could not interpret ${info.media.kind} attachment`, err)
+      return caption || `[The user sent ${info.media.kind === "image" ? "an image" : "a voice message"} that could not be read.]`
+    }
+  }
+
+  /**
    * Handle AI response
    */
   private async handleAIResponse(info: MessageInfo): Promise<void> {
@@ -349,9 +413,13 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
     const participants = memoryService.getParticipants(info.from)
     const context = await this.buildContext(info)
 
+    // Images become descriptions and voice notes become transcripts before the
+    // text ever reaches the model.
+    const effectiveText = await this.resolveMedia(info)
+
     // Remove bot mention from text
     const botName = (runtimeConfig.get("botName") as string) || config.BOT_NAME
-    const cleanText = info.text.replace(new RegExp(botName, "gi"), "").trim()
+    const cleanText = effectiveText.replace(new RegExp(botName, "gi"), "").trim()
 
     logger.info(`Processing AI request from ${info.senderName || info.sender}`)
 

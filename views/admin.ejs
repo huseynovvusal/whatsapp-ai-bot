@@ -1629,6 +1629,60 @@
           </div>
         </div>
 
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Usage limits</h2>
+            <p class="card-subtitle">
+              The bot is driven by whoever is in the chat, so without a ceiling a busy group can
+              run up an unbounded provider bill. Limits are in <strong>tokens</strong>, which is what
+              providers actually report — a price list would drift out of date.
+            </p>
+          </div>
+
+          <div class="form-grid">
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Enforce usage limits</label>
+                <span class="hint">
+                  When a limit is reached the bot stops calling the AI and says so, instead of
+                  failing silently. Admin commands keep working.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="budgetEnabled" <%= runtime.budgetEnabled ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Daily token limit</label>
+                <input type="number" name="dailyTokenLimit" min="0" value="<%= runtime.dailyTokenLimit || 0 %>">
+                <span class="hint"><strong>0 = no limit.</strong> Resets at midnight.</span>
+              </div>
+              <div class="form-group">
+                <label>Monthly token limit</label>
+                <input type="number" name="monthlyTokenLimit" min="0" value="<%= runtime.monthlyTokenLimit || 0 %>">
+                <span class="hint"><strong>0 = no limit.</strong> Calendar month.</span>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Price per 1M tokens (optional)</label>
+                <input type="number" name="costPerMillionTokens" min="0" step="0.01" value="<%= runtime.costPerMillionTokens || 0 %>">
+                <span class="hint">Display only — turns token counts into an estimated cost. 0 hides it.</span>
+              </div>
+              <div class="form-group">
+                <label>Currency label</label>
+                <input type="text" name="costCurrency" value="<%= runtime.costCurrency || 'USD' %>" maxlength="8">
+              </div>
+            </div>
+
+            <div id="budget-status" class="mode-callout">Loading current usage…</div>
+          </div>
+        </div>
+
         <div class="btn-group">
           <button type="submit" class="btn btn-primary">
             <span id="save-text">Save Changes</span>
@@ -1990,6 +2044,30 @@
   </div>
 
   <script>
+    // CSRF: the panel authenticates with a session cookie, which a browser
+    // attaches to cross-site requests too. Every state-changing call must echo
+    // this token in a header, which cross-origin JavaScript cannot set.
+    window.CSRF_TOKEN = <%- JSON.stringify(csrfToken || "") %>;
+
+    // Wrapped once here rather than at ~28 call sites, so a new fetch cannot
+    // accidentally ship without the token.
+    (function () {
+      const rawFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        init = init || {};
+        const method = (init.method || 'GET').toUpperCase();
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        const sameOrigin = !/^https?:\/\//i.test(url) || url.startsWith(window.location.origin);
+        if (sameOrigin && method !== 'GET' && method !== 'HEAD') {
+          const headers = new Headers(init.headers || {});
+          if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', window.CSRF_TOKEN);
+          init.headers = headers;
+          if (!init.credentials) init.credentials = 'same-origin';
+        }
+        return rawFetch(input, init);
+      };
+    })();
+
     // Tab switching (robust: does not rely on the global `event` object, so it
     // works when invoked programmatically e.g. from the "Manage Lists" button)
     function switchTab(tabName) {
@@ -2138,7 +2216,7 @@
       // Unchecked boxes are absent from FormData, so they must be set explicitly
       ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses',
        'ragEnabled', 'ragCrossChat', 'emojiReactions',
-       'companionAdaptiveStyle', 'companionFreeMode'].forEach(key => {
+       'companionAdaptiveStyle', 'companionFreeMode', 'budgetEnabled'].forEach(key => {
         data[key] = formData.has(key);
       });
 
@@ -2793,8 +2871,36 @@
       }
     }
 
+    // Current spend against the configured ceilings
+    async function loadBudget() {
+      const host = document.getElementById('budget-status');
+      if (!host) return;
+      try {
+        const res = await fetch('/api/budget');
+        const b = await res.json();
+        if (!b.dailyTokenLimit && !b.monthlyTokenLimit) {
+          host.textContent = 'No limits set. ' + b.tokensToday.toLocaleString() +
+            ' tokens used today across ' + b.callsToday.toLocaleString() + ' AI calls.';
+          return;
+        }
+        const cost = b.estimatedCostToday !== null
+          ? ' (~' + b.estimatedCostToday + ' ' + b.currency + ' today)' : '';
+        const pct = Math.round(b.utilisation * 100);
+        host.textContent =
+          b.tokensToday.toLocaleString() + ' tokens today' +
+          (b.dailyTokenLimit ? ' of ' + b.dailyTokenLimit.toLocaleString() : '') + '; ' +
+          b.tokensThisMonth.toLocaleString() + ' this month' +
+          (b.monthlyTokenLimit ? ' of ' + b.monthlyTokenLimit.toLocaleString() : '') +
+          cost + ' — ' + pct + '% of the tightest limit' +
+          (b.exceeded ? '. LIMIT REACHED: the bot is not calling the AI.' : '.');
+      } catch (e) {
+        host.textContent = 'Could not load usage.';
+      }
+    }
+
     // Initialize
     toggleProvider();
+    loadBudget();
     loadStats();
     loadBotStatus();
     loadAccessControlMode();

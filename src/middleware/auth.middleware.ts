@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express"
 import bcrypt from "bcryptjs"
+import crypto from "crypto"
 import { config } from "@/config/env"
 import { createLogger } from "@/lib/logger"
 
@@ -10,6 +11,7 @@ declare module "express-session" {
   interface SessionData {
     isAuthenticated: boolean
     username: string
+    csrfToken?: string
   }
 }
 
@@ -77,6 +79,50 @@ setInterval(
   5 * 60 * 1000
 ).unref?.()
 
+/**
+ * CSRF protection for state-changing admin requests.
+ *
+ * Authentication is a session cookie, which the browser attaches to any request
+ * a third-party page makes — so without this, a page the admin merely visits
+ * could POST to this panel on their behalf (disable the bot, rewrite prompts,
+ * clear memory). The token is minted per session and must be echoed in a header,
+ * which cross-origin JavaScript cannot read or set.
+ */
+export function issueCsrfToken(req: Request): string {
+  if (!req.session) return ""
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString("hex")
+  }
+  return req.session.csrfToken
+}
+
+export function requireCsrf(req: Request, res: Response, next: NextFunction): void {
+  // Safe methods do not change state and are exempt.
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    return next()
+  }
+
+  const expected = req.session?.csrfToken
+  const provided = req.get("x-csrf-token") || (req.body && req.body._csrf)
+
+  if (!expected || !provided) {
+    logger.warn(`Blocked ${req.method} ${req.path}: CSRF token missing`)
+    res.status(403).json({ error: "CSRF token missing or invalid. Reload the page and retry." })
+    return
+  }
+
+  const a = Buffer.from(String(expected))
+  const b = Buffer.from(String(provided))
+  // Constant-time compare so the token cannot be guessed byte by byte.
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    logger.warn(`Blocked ${req.method} ${req.path}: CSRF token mismatch`)
+    res.status(403).json({ error: "CSRF token missing or invalid. Reload the page and retry." })
+    return
+  }
+
+  next()
+}
+
 export class AuthMiddleware {
   /**
    * Check if user is authenticated
@@ -129,6 +175,8 @@ export class AuthMiddleware {
             }
             req.session.isAuthenticated = true
             req.session.username = username
+            // Regeneration cleared any previous token; mint one for this session.
+            issueCsrfToken(req)
             logger.info(`Admin logged in: ${username}`)
             res.json({ success: true, message: "Login successful" })
           })

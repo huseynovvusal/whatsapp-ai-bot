@@ -52,6 +52,16 @@ export interface RuntimeConfigSchema {
   companionFreeMode?: boolean
   /** Companion: reply length ceiling in characters. 0 = no limit. */
   companionMaxChars?: number
+  // Spending guardrails
+  /** Enforce the token budgets below. */
+  budgetEnabled?: boolean
+  /** Tokens per day before the bot stops calling the LLM. 0 = no limit. */
+  dailyTokenLimit?: number
+  /** Tokens per calendar month. 0 = no limit. */
+  monthlyTokenLimit?: number
+  /** Optional price per 1M tokens, used only to display an estimated cost. */
+  costPerMillionTokens?: number
+  costCurrency?: string
 }
 
 export class RuntimeConfigService {
@@ -94,6 +104,11 @@ export class RuntimeConfigService {
       companionAdaptiveStyle: true,
       companionFreeMode: false,
       companionMaxChars: 350,
+      budgetEnabled: false,
+      dailyTokenLimit: 0,
+      monthlyTokenLimit: 0,
+      costPerMillionTokens: 0,
+      costCurrency: "USD",
     }
 
     this.loadFromFile()

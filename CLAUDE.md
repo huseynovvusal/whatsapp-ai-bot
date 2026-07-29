@@ -156,6 +156,32 @@ both columns to zero.
 on login to prevent fixation; and the insecure defaults (`admin123`, the fallback session
 secret) log a warning in development and **refuse to start in production**.
 
+**Media understanding**: images and voice notes are handled, not just text.
+`whatsappService.extractMedia()` attaches a `media` descriptor with a **lazy** `download()` —
+media is only fetched after `decideResponse()` has committed to replying, so unanswered
+messages cost no bandwidth. `messageHandler.resolveMedia()` then turns an image into a
+description (`analyzeImage`) and a voice note into a transcript (`transcribeAudio`: Whisper
+on OpenAI, inline audio on Gemini) before the text reaches the model. A caption is kept
+alongside the description, since the reply usually needs both. If interpretation fails the
+bot still replies — media is an enhancement, never a hard dependency. Messages with no
+caption are stored in memory as `[sent an image]` / `[sent a voice message]` rather than a
+blank line.
+
+**Usage limits** (`src/services/budget.service.ts`): the bot is driven by whoever is in the
+chat, so without a ceiling a busy group can run up an unbounded bill. Limits are expressed
+in **tokens**, which is what providers actually report — a hardcoded price list would drift.
+An optional price-per-million converts them to an estimated cost for display only. The check
+runs before the rate limit (so an exhausted budget reports the real reason) and also gates
+the contextual decision call, which costs tokens of its own. It deliberately **fails open**:
+if usage cannot be read, the bot keeps working rather than going silent over bookkeeping.
+`0` means no limit for either ceiling.
+
+**CSRF**: admin auth is a session cookie, which the browser attaches to requests made by any
+site the admin visits — so a third-party page could otherwise POST to the panel on their
+behalf. `requireCsrf` rejects any non-GET without a matching per-session token (constant-time
+compare). The client side wraps `window.fetch` **once** in `admin.ejs` rather than editing
+~28 call sites, so a newly added fetch cannot accidentally ship without the token.
+
 **Memory, in two layers**: *short-term* memory is the recent conversation replayed into every prompt (`memoryService`), bounded by `memoryMessageLimit` and `memoryWindowMs` — both read from runtime config on every use, and both accept **0 meaning "unlimited"/"never expires"**. *Long-term* memory is retrieval (`ragService`): older conversation is chunked, embedded and searched by meaning, so the bot can recall things from months ago without replaying everything. Prefer raising recall over raising the short-term limits — token cost grows with the window but stays flat with retrieval.
 
 **Outbound guard**: `messageHandler.decideResponse()` is the single place that decides whether the bot may speak. It runs *before* any outbound side effect — reply, typing indicator, or emoji reaction — so a disabled setting produces true silence. Previously the 👀 reaction was sent before the private-chat check, so disabling private replies still produced a visible reaction. The error notice in the `catch` is likewise gated on having committed to replying, so failures never leak into chats the bot should be quiet in.

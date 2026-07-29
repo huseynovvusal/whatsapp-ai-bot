@@ -5,8 +5,9 @@ import { databaseService } from "@/services/database.service"
 import { createLogger } from "@/lib/logger"
 import { memoryService } from "@/services/memory.service"
 import { whatsappService } from "@/services/whatsapp.service"
-import { AuthMiddleware } from "@/middleware/auth.middleware"
+import { AuthMiddleware, requireCsrf, issueCsrfToken } from "@/middleware/auth.middleware"
 import { ragService } from "@/services/rag.service"
+import { budgetService } from "@/services/budget.service"
 import {
   personaService,
   PERSONA_LABELS,
@@ -31,15 +32,18 @@ router.get("/login", (_req: Request, res: Response) => {
   res.render("login")
 })
 
-// Protected routes - require authentication
+// Protected routes - require authentication, then a valid CSRF token on any
+// request that changes state.
 router.use(AuthMiddleware.requireAuth)
+router.use(requireCsrf)
 
 router.post("/logout", AuthMiddleware.logout)
 
-router.get("/", (_req: Request, res: Response) => {
+router.get("/", (req: Request, res: Response) => {
   const cfg = runtimeConfig.getAll()
   const stats = databaseService.getStats()
-  res.render("admin", { runtime: cfg, stats })
+  // The page carries the token so its fetch calls can echo it back.
+  res.render("admin", { runtime: cfg, stats, csrfToken: issueCsrfToken(req) })
 })
 
 // API to return runtime config as JSON (useful for client)
@@ -275,6 +279,15 @@ router.post("/save", (req: Request, res: Response) => {
     if ("assistantPrompt" in body) personaService.setPrompt("assistant", String(body.assistantPrompt))
     if ("companionPrompt" in body) personaService.setPrompt("companion", String(body.companionPrompt))
     if ("emojiReactions" in body) runtimeConfig.set("emojiReactions", Boolean(body.emojiReactions))
+    if ("budgetEnabled" in body) runtimeConfig.set("budgetEnabled", Boolean(body.budgetEnabled))
+    if ("dailyTokenLimit" in body)
+      runtimeConfig.set("dailyTokenLimit", nonNegative(body.dailyTokenLimit, 0))
+    if ("monthlyTokenLimit" in body)
+      runtimeConfig.set("monthlyTokenLimit", nonNegative(body.monthlyTokenLimit, 0))
+    if ("costPerMillionTokens" in body)
+      runtimeConfig.set("costPerMillionTokens", nonNegative(body.costPerMillionTokens, 0))
+    if ("costCurrency" in body)
+      runtimeConfig.set("costCurrency", String(body.costCurrency || "USD").slice(0, 8))
     if ("companionAdaptiveStyle" in body)
       runtimeConfig.set("companionAdaptiveStyle", Boolean(body.companionAdaptiveStyle))
     if ("companionFreeMode" in body)
@@ -426,6 +439,16 @@ router.post("/api/chats/:chatId/persona", (req: Request, res: Response) => {
   } catch (err) {
     logger.error("Failed to set chat persona", err)
     res.status(500).json({ error: "Failed to set chat persona" })
+  }
+})
+
+// Current spend against the configured ceilings.
+router.get("/api/budget", (_req: Request, res: Response) => {
+  try {
+    res.json(budgetService.getStatus(true))
+  } catch (err) {
+    logger.error("Failed to get budget status", err)
+    res.status(500).json({ error: "Failed to get budget status" })
   }
 })
 

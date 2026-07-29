@@ -6,6 +6,8 @@ import makeWASocket, {
   proto,
   isJidGroup,
   extractMessageContent,
+  downloadMediaMessage,
+  WAMessage,
 } from "@whiskeysockets/baileys"
 import { Boom } from "@hapi/boom"
 import { config } from "@/config/env"
@@ -24,6 +26,8 @@ const MAX_TRACKED_MESSAGE_IDS = 1000
 /** Messages older than this are treated as replay, never as live traffic. */
 const STALE_MESSAGE_MS = 5 * 60 * 1000
 
+export type MediaKind = "image" | "audio"
+
 export interface MessageInfo {
   from: string
   sender: string
@@ -35,6 +39,15 @@ export interface MessageInfo {
   isReplyToBot: boolean
   messageId: string
   quotedMessage?: proto.IWebMessageInfo // Store original message for replying
+  /** Set when the message carries media the bot can interpret. */
+  media?: {
+    kind: MediaKind
+    mimeType: string
+    /** Voice notes are speech aimed at the chat, unlike a shared music file. */
+    isVoiceNote?: boolean
+    /** Lazy: media is only fetched if the bot actually decides to respond. */
+    download: () => Promise<Buffer>
+  }
 }
 
 export type MessageHandler = (info: MessageInfo) => Promise<void>
@@ -417,9 +430,11 @@ export class WhatsAppService {
       const messageContent = extractMessageContent(msg.message)
       if (!messageContent) return
 
-      // Get text from message
+      // Media is detected first: an image or voice note may carry no caption at
+      // all, and those messages were previously dropped outright.
+      const media = this.extractMedia(messageContent, msg)
       const text = this.extractText(messageContent)
-      if (!text) return
+      if (!text && !media) return
 
       // Ignore messages from self
       if (msg.key.fromMe) return
@@ -464,7 +479,7 @@ export class WhatsAppService {
       }
 
       // Check if bot is mentioned in group
-      const isMentioned = this.isBotMentioned(text, msg)
+      const isMentioned = this.isBotMentioned(text || "", msg)
 
       // Check if message is a reply to bot's message
       const isReplyToBot = this.isReplyToBot(msg)
@@ -473,12 +488,13 @@ export class WhatsAppService {
         from,
         sender: cleanedSenderPhone,
         senderName: userProfileService.getDisplayName(cleanedSenderPhone),
-        text: text.trim(),
+        text: (text || "").trim(),
         isGroup: isGroup || false,
         isMentioned,
         isReplyToBot,
         messageId: msg.key.id || "",
         quotedMessage: msg, // Store original message for replying
+        media,
       }
 
       // If this message is in a group, try to fetch the group subject/name for better logging
@@ -519,15 +535,15 @@ export class WhatsAppService {
         logger.info(
           `📨 ${logMsg} (participant: ${
             (msg.key as any).participant || "-"
-          }, chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${text.substring(0, 50)}...`
+          }, chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${(text || "").substring(0, 50)}...`
         )
-        wsService.log("info", `${logMsg}: ${text.substring(0, 100)}`, "Message")
+        wsService.log("info", `${logMsg}: ${(text || "").substring(0, 100)}`, "Message")
       } else {
         const logMsg = `Message from ${messageInfo.senderName || messageInfo.sender}`
         logger.info(
-          `📨 ${logMsg} (chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${text.substring(0, 50)}...`
+          `📨 ${logMsg} (chat: ${from}) (Mentioned: ${isMentioned}, Reply: ${isReplyToBot}): ${(text || "").substring(0, 50)}...`
         )
-        wsService.log("info", `${logMsg}: ${text.substring(0, 100)}`, "Message")
+        wsService.log("info", `${logMsg}: ${(text || "").substring(0, 100)}`, "Message")
       }
 
       // Call message handler
@@ -547,6 +563,49 @@ export class WhatsAppService {
     if (content.imageMessage?.caption) return content.imageMessage.caption
     if (content.videoMessage?.caption) return content.videoMessage.caption
     return null
+  }
+
+  /**
+   * Detect media the bot can interpret, exposing a lazy download.
+   *
+   * The download deliberately does not run here: most messages are never
+   * answered (unmentioned group chatter, disabled chats), and fetching and
+   * decrypting media for every one of them would waste bandwidth and time.
+   */
+  private extractMedia(content: any, msg: proto.IWebMessageInfo): MessageInfo["media"] {
+    const image = content.imageMessage
+    const audio = content.audioMessage
+
+    let kind: MediaKind | null = null
+    let mimeType = ""
+    let isVoiceNote = false
+
+    if (image) {
+      kind = "image"
+      mimeType = image.mimetype || "image/jpeg"
+    } else if (audio) {
+      kind = "audio"
+      mimeType = audio.mimetype || "audio/ogg"
+      isVoiceNote = Boolean(audio.ptt)
+    }
+
+    if (!kind) return undefined
+
+    return {
+      kind,
+      mimeType,
+      isVoiceNote,
+      download: async (): Promise<Buffer> => {
+        // handleIncomingMessage returns early unless msg.key exists, which is
+        // the only reason IWebMessageInfo does not satisfy WAMessage here.
+        const buffer = await downloadMediaMessage(msg as WAMessage, "buffer", {}, {
+          logger: logger as never,
+          // Lets Baileys ask WhatsApp to re-upload media that has expired.
+          reuploadRequest: this.sock!.updateMediaMessage,
+        })
+        return buffer as Buffer
+      },
+    }
   }
 
   /**

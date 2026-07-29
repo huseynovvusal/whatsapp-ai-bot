@@ -1,9 +1,10 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
-import OpenAI from "openai"
+import OpenAI, { toFile } from "openai"
 import { config } from "@/config/env"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
 import { createLogger } from "@/lib/logger"
+import { budgetService } from "@/services/budget.service"
 import { sanitiseEmoji } from "@/utils/emoji.utils"
 
 const logger = createLogger(config.LOG_LEVEL, "LLMService")
@@ -16,6 +17,8 @@ function recordUsage(tokensUsed: number = 0): void {
   try {
     const today = new Date().toISOString().split("T")[0]
     databaseService.updateAnalytics(today, { apiCalls: 1, tokensUsed })
+    // So the next budget check sees this call rather than a stale cache.
+    budgetService.invalidate()
   } catch (err) {
     logger.warn("Failed to record LLM usage analytics", err)
   }
@@ -324,6 +327,62 @@ Message: ${userText}
   }
 
   /**
+   * Transcribe a voice note or audio clip to text.
+   *
+   * OpenAI uses Whisper; Gemini accepts the audio inline on its normal
+   * multimodal endpoint. Both go through the same retry path as everything else.
+   */
+  public async transcribeAudio(
+    audioBuffer: Buffer,
+    mimeType: string = "audio/ogg"
+  ): Promise<string> {
+    try {
+      logger.debug(`Transcribing ${audioBuffer.length} bytes of ${mimeType}`)
+
+      if (this.provider === "openai" && this.openai) {
+        // Whisper picks the format from the filename, so give it a sane extension.
+        const extension = mimeType.includes("mp3")
+          ? "mp3"
+          : mimeType.includes("mp4") || mimeType.includes("m4a")
+            ? "m4a"
+            : mimeType.includes("wav")
+              ? "wav"
+              : "ogg"
+        const res = await this.withRetry("Whisper transcription", async () =>
+          this.openai!.audio.transcriptions.create({
+            file: await toFile(audioBuffer, `voice.${extension}`, { type: mimeType }),
+            model: "whisper-1",
+          })
+        )
+        // Whisper is billed by audio length, not tokens, so only the call counts.
+        recordUsage(0)
+        logger.info("Audio transcribed successfully (Whisper)")
+        return (res.text || "").trim()
+      }
+
+      if (!this.geminiModel) throw new Error("Gemini model not initialized")
+      const result = await this.withRetry<GeminiResult>("Gemini transcription", () =>
+        this.geminiModel.generateContent([
+          {
+            inlineData: { data: audioBuffer.toString("base64"), mimeType },
+          },
+          "Transcribe this audio exactly. Reply with only the transcription, no commentary. " +
+            "If there is no intelligible speech, reply with an empty string.",
+        ])
+      )
+      const response = await result.response
+      const text = response.text()
+      recordUsage(response.usageMetadata?.totalTokenCount || 0)
+      logger.info("Audio transcribed successfully (Gemini)")
+      return (text || "").trim()
+    } catch (error) {
+      if (error instanceof LLMError) throw error
+      logger.error("Error transcribing audio:", error)
+      throw new LLMError("transcribeAudio failed", classifyError(error).user, false)
+    }
+  }
+
+  /**
    * Analyze an image with vision model
    */
   public async analyzeImage(imageBuffer: Buffer, prompt: string, mimeType: string = "image/jpeg"): Promise<string> {
@@ -333,8 +392,13 @@ Message: ${userText}
       if (this.provider === "openai" && this.openai && this.openaiModel) {
         // Use GPT-4 Vision (need gpt-4-vision-preview or gpt-4o)
         const base64Image = imageBuffer.toString("base64")
-        const res = await this.openai.chat.completions.create({
-          model: this.openaiModel.includes("vision") || this.openaiModel.includes("4o") ? this.openaiModel : "gpt-4o",
+        const res = await this.withRetry("OpenAI vision", () =>
+          this.openai!.chat.completions.create({
+          // Fall back to a known-vision model when the configured one is text-only.
+          model:
+            this.openaiModel!.includes("vision") || this.openaiModel!.includes("4o")
+              ? this.openaiModel!
+              : "gpt-4o",
           messages: [
             {
               role: "user",
@@ -349,8 +413,9 @@ Message: ${userText}
               ]
             }
           ],
-          max_tokens: 500
-        })
+            max_tokens: 500,
+          })
+        )
         const answer = res.choices?.[0]?.message?.content || ""
         recordUsage(res.usage?.total_tokens || 0)
         logger.info("Image analyzed successfully (OpenAI Vision)")
@@ -368,15 +433,18 @@ Message: ${userText}
         }
       }
 
-      const result = await this.geminiModel.generateContent([prompt, imagePart])
+      const result = await this.withRetry<GeminiResult>("Gemini vision", () =>
+        this.geminiModel.generateContent([prompt, imagePart])
+      )
       const response = await result.response
       const answer = response.text()
       recordUsage(response.usageMetadata?.totalTokenCount || 0)
       logger.info("Image analyzed successfully (Gemini Vision)")
       return answer
     } catch (error) {
+      if (error instanceof LLMError) throw error
       logger.error("Error analyzing image:", error)
-      throw new Error("Failed to analyze image. Please try again.")
+      throw new LLMError("analyzeImage failed", classifyError(error).user, false)
     }
   }
 }
