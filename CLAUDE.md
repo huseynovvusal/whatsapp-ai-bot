@@ -82,6 +82,31 @@ All major services are singleton instances created at module level:
 
 **Mention/Tagging**: Bot can tag users in responses using `@Name` format. The `parseMentions()` utility (`src/utils/mention.utils.ts`) converts AI-generated @Name mentions to WhatsApp's native mention format with JIDs. Participant list is passed to LLM in context so it knows who it can mention.
 
+**Personality modes** (`src/services/persona.service.ts`): every chat runs as either
+**Assistant** (concise, task-focused) or **Companion** (conversational, matches the group's
+tone). Each mode owns its own system prompt, so switching a chat swaps the whole voice
+without editing text. Resolution order is *chat override → global default*; overrides live
+in the `chat_settings` table and are set from the Conversations tab or `!mode`.
+
+Companion is **proactive by construction**: `decideResponse()` routes its group messages to
+the contextual path regardless of `respondToGroupMessages`, so it joins in when it has
+something to add. It never overrides a safety switch — `botEnabled`, access control and
+`enablePrivateChat` all still gate it.
+
+Companion also stays honest by default: its built-in prompt tells it to admit it is a bot
+if someone sincerely asks, and never to claim to be a specific real person. Editing the
+prompt in the admin UI replaces that, so keep the clause if you want the behaviour.
+
+**Emoji reactions**: Companion's reactions come from the *same* LLM call that decides
+whether to reply (`askForReactiveReply` returns `{shouldReply, reply, reaction}`), so they
+cost no extra request — and a reaction with `shouldReply: false` is how the bot
+acknowledges something without talking. On the direct-mention path there is no decision
+call to piggyback on, so a keyword pass picks the emoji rather than paying for a request on
+every mention; Assistant keeps a neutral 👀. Values are validated by
+`sanitiseEmoji()` (`src/utils/emoji.utils.ts`) both when parsing the model response and
+again in `react()` immediately before sending, since models reply "none" or ":)" often
+enough that the send site cannot trust its caller.
+
 **Memory, in two layers**: *short-term* memory is the recent conversation replayed into every prompt (`memoryService`), bounded by `memoryMessageLimit` and `memoryWindowMs` — both read from runtime config on every use, and both accept **0 meaning "unlimited"/"never expires"**. *Long-term* memory is retrieval (`ragService`): older conversation is chunked, embedded and searched by meaning, so the bot can recall things from months ago without replaying everything. Prefer raising recall over raising the short-term limits — token cost grows with the window but stays flat with retrieval.
 
 **Outbound guard**: `messageHandler.decideResponse()` is the single place that decides whether the bot may speak. It runs *before* any outbound side effect — reply, typing indicator, or emoji reaction — so a disabled setting produces true silence. Previously the 👀 reaction was sent before the private-chat check, so disabling private replies still produced a visible reaction. The error notice in the `catch` is likewise gated on having committed to replying, so failures never leak into chats the bot should be quiet in.
@@ -148,7 +173,8 @@ All commands start with `!` and are processed in `src/handlers/message.handler.t
 - `!help` - List available commands
 - `!status` - Show memory stats, LLM config, system prompt
 - `!clear [all|chatId]` - Clear memory for current chat, specific chat, or all chats
-- `!system <prompt>` - Update system prompt (persisted to runtime config)
+- `!system <prompt>` - Update the prompt for this chat's personality mode
+- `!mode [assistant|companion]` - Show or set this chat's personality mode
 - `!private on|off` - Enable/disable private chat responses
 
 ## Admin Web UI
@@ -158,7 +184,8 @@ Available at `http://localhost:3000/admin/login` when bot is running. Mounted vi
 **Features**:
 - **Authentication**: Login with `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` (bcrypt)
 - **Dashboard**: Real-time stats (messages, users, conversations, today's activity)
-- **Settings Tab**: Configure bot name, admin numbers, rate limits, LLM provider/keys, system prompt
+- **Settings Tab**: Bot name, admin numbers, rate limits, LLM provider/keys, the two
+  personality prompts, memory limits and recall settings
 - **Conversations Tab**: View recent conversations and search messages
 - **Analytics Tab**: Usage statistics, served by `GET /api/analytics?days=7|30|90`
   - A single filter row (7/30/90 days) scopes every stat, chart and table on the tab,

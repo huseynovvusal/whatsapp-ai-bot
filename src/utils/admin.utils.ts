@@ -46,8 +46,10 @@ export class AdminUtils {
 
 !help - Show this help message
 !clear - Clear message memory
-!system <text> - Update system prompt
+!system <text> - Update the prompt for this chat's mode
+!mode [assistant|companion] - Show or set this chat's personality mode
 !status - Show bot status and memory info
+!private on|off - Enable/disable private chat replies
 
 Only authorized admins can use these commands.
     `.trim()

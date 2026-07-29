@@ -4,6 +4,7 @@ import { config } from "@/config/env"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
 import { createLogger } from "@/lib/logger"
+import { sanitiseEmoji } from "@/utils/emoji.utils"
 
 const logger = createLogger(config.LOG_LEVEL, "LLMService")
 
@@ -128,14 +129,19 @@ Assistant:`
     userText: string,
     context: string,
     systemPrompt: string
-  ): Promise<{ shouldReply: boolean; reply?: string }> {
+  ): Promise<{ shouldReply: boolean; reply?: string; reaction?: string }> {
     try {
+      // The same call also picks an emoji, so reacting costs no extra request.
+      // Reacting without replying is a normal, low-noise way to acknowledge a
+      // message — so `reaction` is meaningful even when shouldReply is false.
       const prompt = `${systemPrompt}
 
 ${context}
 
-You are assigned to decide whether the assistant should jump into a group chat given the message below. Only return a single-line JSON object exactly as follows:
-{ "shouldReply": true|false, "reply": "<short reply if shouldReply true>" }
+Decide how to respond to the message below in this group chat. Reply only when you genuinely add something; staying quiet is usually right. A quick emoji reaction is a good middle ground when a message deserves acknowledgement but not a reply.
+
+Return a single-line JSON object and nothing else:
+{ "shouldReply": true|false, "reply": "<short reply, only if shouldReply is true>", "reaction": "<a single emoji, or empty string for none>" }
 
 Message: ${userText}
 `
@@ -160,17 +166,21 @@ Message: ${userText}
         recordUsage(response.usageMetadata?.totalTokenCount || 0)
       }
 
+      const toDecision = (parsed: Record<string, unknown>) => ({
+        shouldReply: Boolean(parsed.shouldReply),
+        reply: typeof parsed.reply === "string" ? parsed.reply : undefined,
+        reaction: sanitiseEmoji(parsed.reaction),
+      })
+
       // Try to parse JSON directly
       try {
-        const parsed = JSON.parse(text)
-        return { shouldReply: Boolean(parsed.shouldReply), reply: parsed.reply }
+        return toDecision(JSON.parse(text))
       } catch (err) {
-        // Try to extract JSON substring using regex
+        // Models often wrap the object in prose or a code fence; pull it out.
         const match = text.match(/\{[\s\S]*\}/)
         if (match && match[0]) {
           try {
-            const parsed2 = JSON.parse(match[0])
-            return { shouldReply: Boolean(parsed2.shouldReply), reply: parsed2.reply }
+            return toDecision(JSON.parse(match[0]))
           } catch (e) {
             // fallthrough
           }

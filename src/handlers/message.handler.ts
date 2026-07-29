@@ -8,6 +8,8 @@ import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
 import { AdminUtils } from "@/utils/admin.utils"
 import { ragService } from "@/services/rag.service"
+import { personaService, PERSONA_LABELS } from "@/services/persona.service"
+import { sanitiseEmoji } from "@/utils/emoji.utils"
 import { createLogger } from "@/lib/logger"
 import { config } from "@/config/env"
 
@@ -66,6 +68,11 @@ export class MessageHandler {
       if (info.isMentioned || info.isReplyToBot) {
         return { respond: true, mode: "direct", reason: "mentioned or replied to" }
       }
+      // Companion mode is proactive by nature: it decides for itself whether a
+      // message is worth joining, regardless of the group-response setting.
+      if (personaService.isProactive(info.from)) {
+        return { respond: true, mode: "contextual", reason: "companion mode" }
+      }
       if (runtimeConfig.get("respondToGroupMessages") !== true) {
         return no("group responses are limited to mentions")
       }
@@ -88,6 +95,55 @@ export class MessageHandler {
     const maxRequests =
       Number(runtimeConfig.get("rateLimitMaxRequests")) || config.RATE_LIMIT_MAX_REQUESTS
     return `⏱️ Slow down! You can only message me ${maxRequests} times in the configured time window. Try again in ${waitTime} seconds.`
+  }
+
+  /**
+   * React to the incoming message, if reactions are switched on.
+   * Never throws — a failed reaction must not stop the actual reply.
+   */
+  private async react(info: MessageInfo, emoji?: string): Promise<void> {
+    if (runtimeConfig.get("emojiReactions") === false) return
+    // Validated here as well as at the parse site: this is the last point before
+    // the value reaches WhatsApp, so no caller can send an invalid reaction.
+    const safe = sanitiseEmoji(emoji)
+    if (!safe) {
+      if (emoji) logger.debug(`Discarded invalid reaction: ${JSON.stringify(emoji)}`)
+      return
+    }
+    try {
+      await whatsappService.sendReaction(info.from, info.quotedMessage?.key, safe)
+    } catch (err) {
+      logger.debug("Reaction failed", err)
+    }
+  }
+
+  /**
+   * Emoji for acknowledging a message the bot is about to answer.
+   *
+   * Assistant mode keeps the neutral 👀. Companion mode picks something that fits
+   * the message, using a keyword pass rather than an LLM call — this runs on the
+   * direct-reply path, where there is no decision call to piggyback on, so an
+   * extra request here would be paid on every mention.
+   */
+  private pickAcknowledgementEmoji(info: MessageInfo): string {
+    if (!personaService.isProactive(info.from)) return "👀"
+
+    const text = info.text.toLowerCase()
+    const rules: Array<[RegExp, string]> = [
+      [/\b(thank|thanks|thx|appreciate)\b/, "🙏"],
+      [/\b(congrat|well done|nice one|awesome|amazing)\b/, "🎉"],
+      [/\b(happy birthday|birthday)\b/, "🎂"],
+      [/\b(sorry|apolog)\b/, "🫶"],
+      [/\b(help|urgent|asap|problem|issue|broken|error|bug)\b/, "🫡"],
+      [/\b(love|great|awesome|perfect|brilliant)\b/, "❤️"],
+      [/\b(sad|unfortunately|bad news|failed)\b/, "😔"],
+      [/\b(haha|lol|lmao|funny|😂|🤣)\b/, "😂"],
+      [/\?\s*$/, "🤔"],
+    ]
+    for (const [pattern, emoji] of rules) {
+      if (pattern.test(text)) return emoji
+    }
+    return "👀"
   }
 
   /** Send text, preferring a native reply so threading is preserved. */
@@ -153,11 +209,7 @@ export class MessageHandler {
 
       // Acknowledge explicit invitations with a reaction.
       if (info.isMentioned || info.isReplyToBot) {
-        try {
-          await whatsappService.sendReaction(info.from, info.quotedMessage?.key, "👀")
-        } catch {
-          // A failed reaction must never stop the actual reply.
-        }
+        await this.react(info, this.pickAcknowledgementEmoji(info))
       }
 
       await this.handleAIResponse(info)
@@ -180,6 +232,11 @@ export class MessageHandler {
    * then send anything.
    */
   private async handleContextualResponse(info: MessageInfo): Promise<void> {
+    // The cooldown is checked before the decision call, not after: that call is
+    // what costs money, so gating it here is what keeps a busy group affordable.
+    // It therefore also pauses reactions for the cooldown window — intentional,
+    // since a bot that reacts to every message is as noisy as one that replies
+    // to every message.
     const last = this.lastContextualReplyAt.get(info.from) || 0
     const now = Date.now()
     if (now - last < this.contextualCooldownMs) return
@@ -189,8 +246,14 @@ export class MessageHandler {
       const decision = await llmService.askForReactiveReply(
         info.text,
         context,
-        memoryService.getSystemPrompt()
+        memoryService.getSystemPrompt(info.from)
       )
+
+      // The same call chose an emoji, so acknowledging costs no extra request.
+      // Reacting without replying is the quiet, human way to respond — and it is
+      // the whole point of allowing a reaction when shouldReply is false.
+      if (decision.reaction) await this.react(info, decision.reaction)
+
       if (!decision.shouldReply) return
 
       // Silent rate-limit: an unprompted interjection should not nag.
@@ -262,7 +325,7 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
    * Handle AI response
    */
   private async handleAIResponse(info: MessageInfo): Promise<void> {
-    const systemPrompt = memoryService.getSystemPrompt()
+    const systemPrompt = memoryService.getSystemPrompt(info.from)
     const participants = memoryService.getParticipants(info.from)
     const context = await this.buildContext(info)
 
@@ -333,10 +396,34 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
           await whatsappService.sendMessage(info.from, "❌ Usage: !system <new system prompt>")
           return
         }
-        // setSystemPrompt persists to runtime config and applies immediately
-        memoryService.setSystemPrompt(args)
-        await whatsappService.sendMessage(info.from, `✅ System prompt updated:\n"${args}"`)
+        // Updates the prompt for whichever persona this chat is using, and
+        // applies from the next message.
+        memoryService.setSystemPrompt(args, info.from)
+        await whatsappService.sendMessage(
+          info.from,
+          `✅ ${PERSONA_LABELS[personaService.getPersonaForChat(info.from)]} prompt updated:\n"${args}"`
+        )
         break
+
+      case "!mode": {
+        const requested = (args || "").trim().toLowerCase()
+        if (requested !== "assistant" && requested !== "companion") {
+          const active = personaService.getPersonaForChat(info.from)
+          await whatsappService.sendMessage(
+            info.from,
+            `🎭 Mode here: *${PERSONA_LABELS[active]}*\n\n` +
+              "!mode assistant — concise and task-focused\n" +
+              "!mode companion — conversational, joins in when it fits"
+          )
+          return
+        }
+        personaService.setPersonaForChat(info.from, requested)
+        await whatsappService.sendMessage(
+          info.from,
+          `✅ Mode for this chat set to *${PERSONA_LABELS[requested]}*`
+        )
+        break
+      }
 
       case "!status":
         const allMessages = memoryService.getAllMessages() as {
@@ -355,16 +442,24 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
               "gpt-4o-mini"
             : config.GEMINI_MODEL
 
+        // Report the value actually in force, not the env default it ignored.
+        const windowMs = Number(runtimeConfig.get("memoryWindowMs") ?? config.MEMORY_WINDOW_MS)
+        const memoryWindowLabel =
+          windowMs > 0 ? `${Math.round(windowMs / 60000)} minutes` : "unlimited (never expires)"
+        const activePersona = personaService.getPersonaForChat(info.from)
+        const personaIsOverride = databaseService.getChatPersona(info.from) !== null
+
         const statusText = `
 🤖 *Bot Status*
 
 📊 Memory: ${totalMessages} messages across ${conversationCount} conversations
-⏰ Window: ${config.MEMORY_WINDOW_MS / 1000 / 60} minutes
+⏰ Window: ${memoryWindowLabel}
 🧠 LLM: ${currentProvider} (${currentModel})
+🎭 Mode here: ${PERSONA_LABELS[activePersona]}${personaIsOverride ? " (chat override)" : " (default)"}
 👥 Admins: ${config.ADMIN_NUMBERS.length}
 
 System Prompt:
-"${memoryService.getSystemPrompt()}"
+"${memoryService.getSystemPrompt(info.from)}"
         `.trim()
         await whatsappService.sendMessage(info.from, statusText)
         break

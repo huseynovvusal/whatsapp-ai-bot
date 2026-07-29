@@ -37,6 +37,15 @@ export interface RuntimeConfigSchema {
   ragCrossChat?: boolean
   /** Override the embedding model; blank uses the provider default. */
   embeddingModel?: string
+  // Personality modes
+  /** Applies to any chat without its own override. */
+  defaultPersona?: "assistant" | "companion"
+  /** System prompt used in Assistant (task-focused) mode. */
+  assistantPrompt?: string
+  /** System prompt used in Companion (conversational) mode. */
+  companionPrompt?: string
+  /** Let the bot react with emoji. */
+  emojiReactions?: boolean
 }
 
 export class RuntimeConfigService {
@@ -70,9 +79,32 @@ export class RuntimeConfigService {
       ragMinScore: 0.3,
       ragCrossChat: false,
       embeddingModel: "",
+      defaultPersona: "assistant",
+      // Left blank so persona.service can fall back to its built-in defaults;
+      // a value here means the operator has customised the prompt.
+      assistantPrompt: "",
+      companionPrompt: "",
+      emojiReactions: true,
     }
 
     this.loadFromFile()
+    this.migratePersonaPrompts()
+  }
+
+  /**
+   * Personality modes replaced the single `systemPrompt` setting. If an operator
+   * had customised that prompt, carry it over as the Assistant prompt so their
+   * wording is not silently dropped on upgrade.
+   */
+  private migratePersonaPrompts(): void {
+    const legacy = this.runtimeConfig.systemPrompt
+    if (!legacy || !legacy.trim()) return
+    if (this.runtimeConfig.assistantPrompt?.trim()) return
+    if (legacy.trim() === config.SYSTEM_PROMPT.trim()) return
+
+    this.runtimeConfig.assistantPrompt = legacy
+    logger.info("Migrated existing system prompt into the Assistant persona")
+    this.saveToFile()
   }
 
   private loadFromFile(): void {

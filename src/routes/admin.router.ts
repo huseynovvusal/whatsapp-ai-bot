@@ -7,6 +7,12 @@ import { memoryService } from "@/services/memory.service"
 import { whatsappService } from "@/services/whatsapp.service"
 import { AuthMiddleware } from "@/middleware/auth.middleware"
 import { ragService } from "@/services/rag.service"
+import {
+  personaService,
+  PERSONA_LABELS,
+  DEFAULT_ASSISTANT_PROMPT,
+  DEFAULT_COMPANION_PROMPT,
+} from "@/services/persona.service"
 import { embeddingService } from "@/services/embedding.service"
 import { AdminUtils } from "@/utils/admin.utils"
 import { cleanPhoneNumber } from "@/utils/phone.utils"
@@ -253,6 +259,14 @@ router.post("/save", (req: Request, res: Response) => {
     // Apply the system prompt through memoryService so it takes effect immediately
     // (memoryService.setSystemPrompt also persists it to runtime config).
     if ("systemPrompt" in body) memoryService.setSystemPrompt(String(body.systemPrompt))
+
+    // Personality modes: each has its own prompt, so switching a chat's mode
+    // swaps the whole voice without editing any text.
+    if ("defaultPersona" in body && (body.defaultPersona === "assistant" || body.defaultPersona === "companion"))
+      runtimeConfig.set("defaultPersona", body.defaultPersona)
+    if ("assistantPrompt" in body) personaService.setPrompt("assistant", String(body.assistantPrompt))
+    if ("companionPrompt" in body) personaService.setPrompt("companion", String(body.companionPrompt))
+    if ("emojiReactions" in body) runtimeConfig.set("emojiReactions", Boolean(body.emojiReactions))
     if ("geminiApiKey" in body) runtimeConfig.set("geminiApiKey", String(body.geminiApiKey))
     if ("llmProvider" in body) runtimeConfig.set("llmProvider", String(body.llmProvider) as any)
     if ("openaiApiKey" in body) runtimeConfig.set("openaiApiKey", String(body.openaiApiKey))
@@ -334,6 +348,49 @@ router.get("/api/bot/status", (_req: Request, res: Response) => {
   } catch (err) {
     logger.error("Failed to get bot status", err)
     res.status(500).json({ error: "Failed to get bot status" })
+  }
+})
+
+// ============= PERSONALITY MODES =============
+
+router.get("/api/personas", (_req: Request, res: Response) => {
+  try {
+    res.json({
+      defaultPersona: personaService.getDefaultPersona(),
+      labels: PERSONA_LABELS,
+      prompts: {
+        assistant: personaService.getPrompt("assistant"),
+        companion: personaService.getPrompt("companion"),
+      },
+      defaults: {
+        assistant: DEFAULT_ASSISTANT_PROMPT,
+        companion: DEFAULT_COMPANION_PROMPT,
+      },
+      overrides: databaseService.getChatPersonaOverrides(),
+    })
+  } catch (err) {
+    logger.error("Failed to get personas", err)
+    res.status(500).json({ error: "Failed to get personas" })
+  }
+})
+
+// Set (or clear, with persona: null) a single chat's mode.
+router.post("/api/chats/:chatId/persona", (req: Request, res: Response) => {
+  try {
+    const chatId = decodeURIComponent(String(req.params.chatId))
+    const requested = req.body?.persona
+    if (requested === null || requested === "" || requested === "default") {
+      personaService.setPersonaForChat(chatId, null)
+      return res.json({ success: true, persona: null })
+    }
+    if (requested !== "assistant" && requested !== "companion") {
+      return res.status(400).json({ error: "persona must be 'assistant', 'companion' or null" })
+    }
+    personaService.setPersonaForChat(chatId, requested)
+    res.json({ success: true, persona: requested })
+  } catch (err) {
+    logger.error("Failed to set chat persona", err)
+    res.status(500).json({ error: "Failed to set chat persona" })
   }
 })
 

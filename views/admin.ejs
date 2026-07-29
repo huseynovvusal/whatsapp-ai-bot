@@ -872,6 +872,28 @@
     .delta-down { color: var(--chart-delta-down); font-weight: 600; }
     .delta-flat { color: var(--gray-500); font-weight: 600; }
 
+    /* Personality modes */
+    .mode-callout {
+      padding: 0.875rem 1rem;
+      background: #eef2ff;
+      border: 1px solid #c7d2fe;
+      border-radius: 0.5rem;
+      font-size: 0.813rem;
+      color: var(--gray-700);
+      line-height: 1.5;
+    }
+
+    .mode-select {
+      width: auto;
+      min-width: 150px;
+      padding: 0.375rem 0.5rem;
+      font-size: 0.75rem;
+      border: 1px solid var(--gray-300);
+      border-radius: 0.375rem;
+      background: var(--white);
+      cursor: pointer;
+    }
+
     /* People & Memory panels */
     .detail-grid {
       display: grid;
@@ -1369,10 +1391,63 @@
               </div>
             </div>
 
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Personality modes</h2>
+            <p class="card-subtitle">
+              Each mode has its own prompt, so switching a chat swaps the whole voice.
+              Any chat can override the default from the Conversations tab or with
+              <code>!mode assistant|companion</code>. Changes apply to the next message.
+            </p>
+          </div>
+
+          <div class="form-grid">
             <div class="form-group">
-              <label>System Prompt</label>
-              <textarea name="systemPrompt" rows="4" required><%= runtime.systemPrompt %></textarea>
-              <span class="hint">Defines the bot's personality and behavior. Changes apply immediately to new messages — no restart required.</span>
+              <label>Default mode</label>
+              <select name="defaultPersona" id="defaultPersona">
+                <option value="assistant" <%= (runtime.defaultPersona || 'assistant') === 'assistant' ? 'selected' : '' %>>🎯 Assistant — concise and task-focused</option>
+                <option value="companion" <%= runtime.defaultPersona === 'companion' ? 'selected' : '' %>>💬 Companion — conversational, joins in when it fits</option>
+              </select>
+              <span class="hint">Applies to any chat without its own override.</span>
+            </div>
+
+            <div class="mode-callout">
+              <strong>Companion mode is proactive.</strong> In groups it decides for itself when a
+              message is worth joining, so it does not wait to be tagged — the Group Response Mode
+              setting above does not apply to chats using it. It can also reply with just an emoji
+              reaction when a message deserves acknowledgement but not a full answer.
+            </div>
+
+            <div class="form-group">
+              <label>🎯 Assistant prompt</label>
+              <textarea name="assistantPrompt" rows="6" placeholder="Leave blank to use the built-in default"><%= runtime.assistantPrompt || '' %></textarea>
+              <span class="hint">Blank uses the built-in default (short, clear, task-focused).</span>
+            </div>
+
+            <div class="form-group">
+              <label>💬 Companion prompt</label>
+              <textarea name="companionPrompt" rows="10" placeholder="Leave blank to use the built-in default"><%= runtime.companionPrompt || '' %></textarea>
+              <span class="hint">
+                Blank uses the built-in default, which matches the group's tone, keeps replies
+                short, and stays honest if someone sincerely asks whether it's a bot.
+              </span>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Emoji reactions</label>
+                <span class="hint">
+                  Assistant uses 👀. Companion picks an emoji that fits — chosen by the same call
+                  that decides whether to reply, so it costs no extra request.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="emojiReactions" <%= runtime.emojiReactions !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
             </div>
           </div>
         </div>
@@ -1556,6 +1631,7 @@
               <tr>
                 <th>Chat Name</th>
                 <th>Type</th>
+                <th>Mode</th>
                 <th>Chat ID</th>
                 <th>Messages</th>
                 <th>Actions</th>
@@ -1563,7 +1639,7 @@
             </thead>
             <tbody id="conversations-list">
               <tr>
-                <td colspan="5">
+                <td colspan="6">
                   <div class="empty-state">
                     <div class="empty-state-icon">📭</div>
                     <p>No conversations yet</p>
@@ -1909,7 +1985,7 @@
 
         if (!data.conversations || data.conversations.length === 0) {
           tbody.innerHTML = `
-            <tr><td colspan="5">
+            <tr><td colspan="6">
               <div class="empty-state">
                 <div class="empty-state-icon">📭</div>
                 <p>No conversations yet</p>
@@ -1918,13 +1994,29 @@
           return;
         }
 
+        // Personality overrides, so each row can show the mode actually in force
+        let personaInfo = { defaultPersona: 'assistant', overrides: {} };
+        try {
+          const pRes = await fetch('/api/personas');
+          if (pRes.ok) personaInfo = await pRes.json();
+        } catch (e) { /* fall back to showing the default everywhere */ }
+
         tbody.innerHTML = data.conversations.map(c => {
           const isGroup = c.id.includes('@g.us');
           const chatType = isGroup ? 'group' : 'contact';
+          const override = personaInfo.overrides[c.id] || '';
+          const effective = override || personaInfo.defaultPersona;
+          const modeCell = `
+            <select class="mode-select" onchange="setChatPersona('${c.id}', this.value)" aria-label="Personality mode">
+              <option value="default" ${!override ? 'selected' : ''}>Default (${effective === 'companion' ? 'Companion' : 'Assistant'})</option>
+              <option value="assistant" ${override === 'assistant' ? 'selected' : ''}>🎯 Assistant</option>
+              <option value="companion" ${override === 'companion' ? 'selected' : ''}>💬 Companion</option>
+            </select>`;
           return `
           <tr>
             <td><strong>${c.name || '(Unknown)'}</strong></td>
             <td><span class="badge ${isGroup ? 'badge-info' : 'badge-success'}">${isGroup ? 'Group' : 'Contact'}</span></td>
+            <td>${modeCell}</td>
             <td>
               <code style="font-size: 0.75rem; background: var(--gray-100); padding: 0.25rem 0.5rem; border-radius: 0.25rem; user-select: all;">${c.id}</code>
               <button class="btn btn-secondary btn-sm" onclick="copyToClipboard('${c.id}')" style="margin-left: 0.5rem; padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Copy ID">
@@ -1949,6 +2041,29 @@
       }
     }
 
+    // Set a single chat's personality mode ("default" clears the override)
+    async function setChatPersona(chatId, persona) {
+      try {
+        const res = await fetch('/api/chats/' + encodeURIComponent(chatId) + '/persona', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ persona: persona === 'default' ? null : persona })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          showAlert('success', persona === 'default'
+            ? 'Chat now follows the default mode'
+            : 'Chat mode set to ' + (persona === 'companion' ? 'Companion' : 'Assistant'));
+          loadConversations();
+        } else {
+          showAlert('error', data.error || 'Failed to set mode');
+        }
+      } catch (err) {
+        console.error('Failed to set chat persona:', err);
+        showAlert('error', 'Failed to set mode');
+      }
+    }
+
     // Toggle provider
     function toggleProvider() {
       const provider = document.getElementById('llmProvider').value;
@@ -1965,7 +2080,7 @@
 
       // Unchecked boxes are absent from FormData, so they must be set explicitly
       ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses',
-       'ragEnabled', 'ragCrossChat'].forEach(key => {
+       'ragEnabled', 'ragCrossChat', 'emojiReactions'].forEach(key => {
         data[key] = formData.has(key);
       });
 

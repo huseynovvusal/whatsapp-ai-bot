@@ -1,4 +1,5 @@
 import { runtimeConfig } from "@/services/runtimeConfig.service"
+import { personaService } from "@/services/persona.service"
 import { whatsappService } from "@/services/whatsapp.service"
 import { userProfileService } from "@/services/userProfile.service"
 import { databaseService } from "@/services/database.service"
@@ -173,27 +174,21 @@ export class MemoryService {
   }
 
   /**
-   * Update system prompt.
-   * Persists to runtime config so the change is applied immediately (used by the
-   * next LLM call) and survives restarts.
+   * Update the system prompt for the personality mode a chat is using (or for
+   * the global default persona when no chat is given). Persisted immediately, so
+   * the change applies to the very next LLM call.
    */
-  public setSystemPrompt(prompt: string): void {
+  public setSystemPrompt(prompt: string, chatId?: string): void {
     this.systemPrompt = prompt
-    runtimeConfig.set("systemPrompt", prompt)
-    logger.info("System prompt updated")
+    personaService.setPrompt(personaService.getPersonaForChat(chatId), prompt)
   }
 
   /**
-   * Get current system prompt.
-   * Always reads the runtime config first so updates made via the admin UI or the
-   * `!system` command take effect immediately without a restart.
+   * The system prompt for a chat, resolved through its personality mode.
+   * Read fresh on every call so admin-UI edits take effect without a restart.
    */
-  public getSystemPrompt(): string {
-    const fromConfig = runtimeConfig.get("systemPrompt") as string | undefined
-    if (typeof fromConfig === "string" && fromConfig.trim().length > 0) {
-      return fromConfig
-    }
-    return this.systemPrompt
+  public getSystemPrompt(chatId?: string): string {
+    return personaService.getPromptForChat(chatId)
   }
 
   /**

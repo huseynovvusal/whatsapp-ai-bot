@@ -202,7 +202,50 @@ export class DatabaseService {
       );
     `)
 
+    // Per-chat overrides (currently the personality mode). A chat with no row
+    // here simply follows the global default.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS chat_settings (
+        chatId TEXT PRIMARY KEY,
+        persona TEXT,
+        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `)
+
     logger.info("Database tables initialized")
+  }
+
+  // ============= PER-CHAT SETTINGS =============
+
+  public getChatPersona(chatId: string): "assistant" | "companion" | null {
+    const row = this.db
+      .prepare("SELECT persona FROM chat_settings WHERE chatId = ?")
+      .get(chatId) as { persona: string | null } | undefined
+    const value = row?.persona
+    return value === "assistant" || value === "companion" ? value : null
+  }
+
+  public setChatPersona(chatId: string, persona: "assistant" | "companion"): void {
+    this.db
+      .prepare(
+        `INSERT INTO chat_settings (chatId, persona) VALUES (?, ?)
+         ON CONFLICT(chatId) DO UPDATE SET persona = excluded.persona, updatedAt = CURRENT_TIMESTAMP`
+      )
+      .run(chatId, persona)
+  }
+
+  public clearChatPersona(chatId: string): void {
+    this.db.prepare("DELETE FROM chat_settings WHERE chatId = ?").run(chatId)
+  }
+
+  /** Every chat that has an explicit override, for the admin UI. */
+  public getChatPersonaOverrides(): Record<string, string> {
+    const rows = this.db
+      .prepare("SELECT chatId, persona FROM chat_settings WHERE persona IS NOT NULL")
+      .all() as Array<{ chatId: string; persona: string }>
+    const out: Record<string, string> = {}
+    for (const row of rows) out[row.chatId] = row.persona
+    return out
   }
 
   // ============= KNOWLEDGE BASE (RAG) OPERATIONS =============
