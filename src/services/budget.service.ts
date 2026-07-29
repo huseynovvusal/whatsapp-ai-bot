@@ -45,7 +45,7 @@ export class BudgetService {
   }
 
   /** Current usage against the configured ceilings. */
-  public getStatus(force = false): BudgetStatus {
+  public async getStatus(force = false): Promise<BudgetStatus> {
     if (!force && this.cache && Date.now() - this.cache.at < this.cacheTtlMs) {
       return this.cache.status
     }
@@ -60,10 +60,10 @@ export class BudgetService {
     let callsToday = 0
     let tokensThisMonth = 0
     try {
-      const todayRow = databaseService.getTodayStats()
+      const todayRow = await databaseService.getTodayStats()
       tokensToday = todayRow?.tokensUsed || 0
       callsToday = todayRow?.apiCalls || 0
-      for (const row of databaseService.getAnalytics(monthStart, today)) {
+      for (const row of await databaseService.getAnalytics(monthStart, today)) {
         tokensThisMonth += row.tokensUsed || 0
       }
     } catch (err) {
@@ -108,10 +108,10 @@ export class BudgetService {
    * Deliberately fails open: if usage cannot be read, the bot keeps working
    * rather than going silent over a bookkeeping problem.
    */
-  public check(): { allowed: boolean; reason?: string } {
+  public async check(): Promise<{ allowed: boolean; reason?: string }> {
     if (!this.isEnabled()) return { allowed: true }
 
-    const status = this.getStatus()
+    const status = await this.getStatus()
     if (!status.exceeded) return { allowed: true }
 
     const scope = status.exceeded === "daily" ? "daily" : "monthly"

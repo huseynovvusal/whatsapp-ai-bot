@@ -23,7 +23,7 @@ export class MessageHandler {
   /**
    * Check access control - returns true if allowed, false if blocked
    */
-  private checkAccessControl(info: MessageInfo): boolean {
+  private async checkAccessControl(info: MessageInfo): Promise<boolean> {
     const accessMode = (runtimeConfig.get("accessControlMode") as string) || config.ACCESS_CONTROL_MODE
 
     // Admins always have access
@@ -43,7 +43,7 @@ export class MessageHandler {
 
     // Check blacklist mode
     if (accessMode === "blacklist") {
-      return !databaseService.isBlacklisted(info.from)
+      return !(await databaseService.isBlacklisted(info.from))
     }
 
     return true
@@ -186,7 +186,7 @@ export class MessageHandler {
           logger.debug(`Bot is disabled, ignoring message from ${info.sender}`)
           return
         }
-        if (!this.checkAccessControl(info)) {
+        if (!(await this.checkAccessControl(info))) {
           logger.info(`Access denied for ${info.sender} in chat ${info.from}`)
           return
         }
@@ -229,7 +229,7 @@ export class MessageHandler {
 
       // Spending ceiling is checked before the rate limit so an exhausted budget
       // reports the real reason rather than looking like ordinary throttling.
-      const budget = budgetService.check()
+      const budget = await budgetService.check()
       if (!budget.allowed) {
         await this.reply(info, budget.reason!)
         return
@@ -281,14 +281,14 @@ export class MessageHandler {
     if (now - last < this.contextualCooldownMs) return
 
     // The decision call itself costs tokens, so the budget gates it as well.
-    if (!budgetService.check().allowed) return
+    if (!(await budgetService.check()).allowed) return
 
     try {
       const context = await this.buildContext(info)
       const decision = await llmService.askForReactiveReply(
         info.text,
         context,
-        memoryService.getSystemPrompt(info.from)
+        await memoryService.getSystemPrompt(info.from)
       )
 
       // The same call chose an emoji, so acknowledging costs no extra request.
@@ -409,7 +409,7 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
    * Handle AI response
    */
   private async handleAIResponse(info: MessageInfo): Promise<void> {
-    const systemPrompt = memoryService.getSystemPrompt(info.from)
+    const systemPrompt = await memoryService.getSystemPrompt(info.from)
     const participants = memoryService.getParticipants(info.from)
     const context = await this.buildContext(info)
 
@@ -513,7 +513,7 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
           )
           return
         }
-        personaService.setPersonaForChat(info.from, requested)
+        await personaService.setPersonaForChat(info.from, requested)
         await whatsappService.sendMessage(
           info.from,
           `✅ Mode for this chat set to *${PERSONA_LABELS[requested]}*`
@@ -543,7 +543,7 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
         const memoryWindowLabel =
           windowMs > 0 ? `${Math.round(windowMs / 60000)} minutes` : "unlimited (never expires)"
         const activePersona = personaService.getPersonaForChat(info.from)
-        const personaIsOverride = databaseService.getChatPersona(info.from) !== null
+        const personaIsOverride = personaService.hasOverride(info.from)
 
         const statusText = `
 🤖 *Bot Status*
@@ -555,7 +555,7 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
 👥 Admins: ${config.ADMIN_NUMBERS.length}
 
 System Prompt:
-"${memoryService.getSystemPrompt(info.from)}"
+"${await memoryService.getSystemPrompt(info.from)}"
         `.trim()
         await whatsappService.sendMessage(info.from, statusText)
         break

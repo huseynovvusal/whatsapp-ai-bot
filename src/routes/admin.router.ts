@@ -60,7 +60,7 @@ router.get("/api/conversations", async (_req: Request, res: Response) => {
     // Start from persisted conversations so the list survives a restart —
     // in-memory state alone would show nothing until new messages arrive.
     try {
-      for (const conversation of databaseService.getAllConversations()) {
+      for (const conversation of await databaseService.getAllConversations()) {
         conversationMap.set(conversation.chatId, {
           id: conversation.chatId,
           count: conversation.messageCount || 0,
@@ -131,11 +131,13 @@ router.get("/api/conversations", async (_req: Request, res: Response) => {
 })
 
 // Get database statistics
-router.get("/api/stats", (_req: Request, res: Response) => {
+router.get("/api/stats", async (_req: Request, res: Response) => {
   try {
-    const stats = databaseService.getStats()
-    const userStats = databaseService.getUserStats()
-    const todayStats = databaseService.getTodayStats()
+    const [stats, userStats, todayStats] = await Promise.all([
+      databaseService.getStats(),
+      databaseService.getUserStats(),
+      databaseService.getTodayStats(),
+    ])
 
     res.json({
       ...stats,
@@ -152,7 +154,7 @@ router.get("/api/stats", (_req: Request, res: Response) => {
 // Get analytics data.
 // Returns everything the Analytics tab renders, scoped to a single time window so
 // every chart, stat and table on the page agrees with the others.
-router.get("/api/analytics", (req: Request, res: Response) => {
+router.get("/api/analytics", async (req: Request, res: Response) => {
   try {
     const requestedDays = Number(req.query.days)
     const days = [7, 30, 90].includes(requestedDays) ? requestedDays : 7
@@ -168,7 +170,7 @@ router.get("/api/analytics", (req: Request, res: Response) => {
     const prevSince = since - days * dayMs
 
     const toDate = (ms: number) => new Date(ms).toISOString().split("T")[0]
-    const rows = databaseService.getAnalytics(toDate(since), toDate(now))
+    const rows = await databaseService.getAnalytics(toDate(since), toDate(now))
     const byDate = new Map(rows.map((r) => [r.date, r]))
 
     // Emit one point per day (zero-filled) so gaps in activity read as gaps
@@ -184,8 +186,10 @@ router.get("/api/analytics", (req: Request, res: Response) => {
       }
     })
 
-    const totals = databaseService.getRangeTotals(since, now)
-    const previous = databaseService.getRangeTotals(prevSince, since - 1)
+    const [totals, previous] = await Promise.all([
+      databaseService.getRangeTotals(since, now),
+      databaseService.getRangeTotals(prevSince, since - 1),
+    ])
 
     res.json({
       days,
@@ -197,9 +201,9 @@ router.get("/api/analytics", (req: Request, res: Response) => {
         tokensUsed: series.reduce((sum, d) => sum + d.tokensUsed, 0),
       },
       previous,
-      topUsers: databaseService.getTopUsers(since, 8),
-      topChats: databaseService.getTopConversations(since, 8),
-      hourly: databaseService.getHourlyActivity(since),
+      topUsers: await databaseService.getTopUsers(since, 8),
+      topChats: await databaseService.getTopConversations(since, 8),
+      hourly: await databaseService.getHourlyActivity(since),
       // Retained for backwards compatibility with any existing consumer.
       analytics: rows,
     })
@@ -210,7 +214,7 @@ router.get("/api/analytics", (req: Request, res: Response) => {
 })
 
 // Search messages
-router.get("/api/search", (req: Request, res: Response) => {
+router.get("/api/search", async (req: Request, res: Response) => {
   try {
     const query = String(req.query.q || "")
     const limit = Number(req.query.limit) || 100
@@ -219,7 +223,7 @@ router.get("/api/search", (req: Request, res: Response) => {
       return res.status(400).json({ error: "Query parameter 'q' is required" })
     }
 
-    const messages = databaseService.searchMessages(query, limit)
+    const messages = await databaseService.searchMessages(query, limit)
     res.json({ messages, count: messages.length })
   } catch (err) {
     logger.error("Failed to search messages", err)
@@ -374,7 +378,7 @@ router.get("/api/bot/status", (_req: Request, res: Response) => {
 
 // ============= PERSONALITY MODES =============
 
-router.get("/api/personas", (_req: Request, res: Response) => {
+router.get("/api/personas", async (_req: Request, res: Response) => {
   try {
     res.json({
       defaultPersona: personaService.getDefaultPersona(),
@@ -387,7 +391,7 @@ router.get("/api/personas", (_req: Request, res: Response) => {
         assistant: DEFAULT_ASSISTANT_PROMPT,
         companion: DEFAULT_COMPANION_PROMPT,
       },
-      overrides: databaseService.getChatPersonaOverrides(),
+      overrides: await databaseService.getChatPersonaOverrides(),
       companion: {
         adaptiveStyle: runtimeConfig.get("companionAdaptiveStyle") !== false,
         freeMode: runtimeConfig.get("companionFreeMode") === true,
@@ -402,10 +406,10 @@ router.get("/api/personas", (_req: Request, res: Response) => {
 
 // What the bot has learned about how a chat writes, plus the exact prompt that
 // would be sent. Lets an operator see the adaptation rather than guess at it.
-router.get("/api/chats/:chatId/style", (req: Request, res: Response) => {
+router.get("/api/chats/:chatId/style", async (req: Request, res: Response) => {
   try {
     const chatId = decodeURIComponent(String(req.params.chatId))
-    const profile = styleService.getProfile(chatId)
+    const profile = await styleService.getProfile(chatId)
     res.json({
       chatId,
       persona: personaService.getPersonaForChat(chatId),
@@ -414,7 +418,7 @@ router.get("/api/chats/:chatId/style", (req: Request, res: Response) => {
       maxChars: personaService.getMaxReplyChars(chatId),
       profile,
       guidance: styleService.describe(profile),
-      composedPrompt: personaService.getPromptForChat(chatId),
+      composedPrompt: await personaService.getPromptForChat(chatId),
     })
   } catch (err) {
     logger.error("Failed to get chat style", err)
@@ -423,18 +427,18 @@ router.get("/api/chats/:chatId/style", (req: Request, res: Response) => {
 })
 
 // Set (or clear, with persona: null) a single chat's mode.
-router.post("/api/chats/:chatId/persona", (req: Request, res: Response) => {
+router.post("/api/chats/:chatId/persona", async (req: Request, res: Response) => {
   try {
     const chatId = decodeURIComponent(String(req.params.chatId))
     const requested = req.body?.persona
     if (requested === null || requested === "" || requested === "default") {
-      personaService.setPersonaForChat(chatId, null)
+      await personaService.setPersonaForChat(chatId, null)
       return res.json({ success: true, persona: null })
     }
     if (requested !== "assistant" && requested !== "companion") {
       return res.status(400).json({ error: "persona must be 'assistant', 'companion' or null" })
     }
-    personaService.setPersonaForChat(chatId, requested)
+    await personaService.setPersonaForChat(chatId, requested)
     res.json({ success: true, persona: requested })
   } catch (err) {
     logger.error("Failed to set chat persona", err)
@@ -443,9 +447,9 @@ router.post("/api/chats/:chatId/persona", (req: Request, res: Response) => {
 })
 
 // Current spend against the configured ceilings.
-router.get("/api/budget", (_req: Request, res: Response) => {
+router.get("/api/budget", async (_req: Request, res: Response) => {
   try {
-    res.json(budgetService.getStatus(true))
+    res.json(await budgetService.getStatus(true))
   } catch (err) {
     logger.error("Failed to get budget status", err)
     res.status(500).json({ error: "Failed to get budget status" })
@@ -454,9 +458,9 @@ router.get("/api/budget", (_req: Request, res: Response) => {
 
 // ============= KNOWLEDGE BASE (RAG) =============
 
-router.get("/api/knowledge/status", (_req: Request, res: Response) => {
+router.get("/api/knowledge/status", async (_req: Request, res: Response) => {
   try {
-    res.json({ ...ragService.getStatus(), stats: databaseService.getKnowledgeStats() })
+    res.json({ ...ragService.getStatus(), stats: await databaseService.getKnowledgeStats() })
   } catch (err) {
     logger.error("Failed to get knowledge status", err)
     res.status(500).json({ error: "Failed to get knowledge status" })
@@ -486,10 +490,10 @@ router.post("/api/knowledge/reindex", async (req: Request, res: Response) => {
   }
 })
 
-router.delete("/api/knowledge", (req: Request, res: Response) => {
+router.delete("/api/knowledge", async (req: Request, res: Response) => {
   try {
     const chatId = req.query.chatId ? String(req.query.chatId) : undefined
-    const removed = databaseService.clearKnowledge(chatId)
+    const removed = await databaseService.clearKnowledge(chatId)
     res.json({ success: true, removed })
   } catch (err) {
     logger.error("Failed to clear knowledge base", err)
@@ -528,9 +532,9 @@ router.get("/api/me", (_req: Request, res: Response) => {
 })
 
 // Everyone the bot knows about, with activity figures.
-router.get("/api/users", (_req: Request, res: Response) => {
+router.get("/api/users", async (_req: Request, res: Response) => {
   try {
-    res.json({ users: databaseService.getUserDirectory() })
+    res.json({ users: await databaseService.getUserDirectory() })
   } catch (err) {
     logger.error("Failed to list users", err)
     res.status(500).json({ error: "Failed to list users" })
@@ -538,19 +542,19 @@ router.get("/api/users", (_req: Request, res: Response) => {
 })
 
 // Full detail for one person, including which chats they appear in.
-router.get("/api/users/:phone", (req: Request, res: Response) => {
+router.get("/api/users/:phone", async (req: Request, res: Response) => {
   try {
     // Accept the number in either shape ("+99412..." or "99412...") — historical
     // rows may predate normalisation.
     const raw = decodeURIComponent(String(req.params.phone))
     const normalised = cleanPhoneNumber(raw)
     let phone = normalised
-    let user = databaseService.getUser(phone)
-    let activity = databaseService.getUserActivity(phone)
+    let user = await databaseService.getUser(phone)
+    let activity = await databaseService.getUserActivity(phone)
     if (!user && !activity.chats.length && raw !== normalised) {
       phone = raw
-      user = databaseService.getUser(phone)
-      activity = databaseService.getUserActivity(phone)
+      user = await databaseService.getUser(phone)
+      activity = await databaseService.getUserActivity(phone)
     }
     if (!user && !activity.chats.length) {
       return res.status(404).json({ error: "User not found" })
@@ -565,7 +569,7 @@ router.get("/api/users/:phone", (req: Request, res: Response) => {
         isAdmin: AdminUtils.isAdmin(phone),
       },
       activity,
-      recentMessages: databaseService.getMessagesBySender(phone, 20),
+      recentMessages: await databaseService.getMessagesBySender(phone, 20),
     })
   } catch (err) {
     logger.error("Failed to get user detail", err)
@@ -592,15 +596,18 @@ router.get("/api/chats/:chatId/participants", async (req: Request, res: Response
     }
 
     // Fall back to (or supplement with) senders seen in this chat.
-    const seen = databaseService.getChatParticipants(chatId)
+    const seen = await databaseService.getChatParticipants(chatId)
     for (const person of seen) {
       if (!participants.find((p) => p.phone === person.sender)) {
         participants.push({ phone: person.sender, name: person.senderName, isAdmin: false })
       }
     }
 
+    // One query for every participant rather than a lookup per row.
+    const users = await databaseService.getUsersByPhones(participants.map((p) => p.phone))
+
     const enriched = participants.map((p) => {
-      const user = databaseService.getUser(p.phone)
+      const user = users.get(p.phone)
       const stats = seen.find((s) => s.sender === p.phone)
       return {
         phone: p.phone,
@@ -633,9 +640,9 @@ router.get("/api/chats/:chatId/participants", async (req: Request, res: Response
 })
 
 // Access Control API endpoints
-router.get("/api/whitelist", (_req: Request, res: Response) => {
+router.get("/api/whitelist", async (_req: Request, res: Response) => {
   try {
-    const whitelist = databaseService.getWhitelist()
+    const whitelist = await databaseService.getWhitelist()
     res.json({ whitelist })
   } catch (err) {
     logger.error("Failed to get whitelist", err)
@@ -643,13 +650,13 @@ router.get("/api/whitelist", (_req: Request, res: Response) => {
   }
 })
 
-router.post("/api/whitelist", (req: Request, res: Response) => {
+router.post("/api/whitelist", async (req: Request, res: Response) => {
   try {
     const { identifier, type, name } = req.body
     if (!identifier || !type) {
       return res.status(400).json({ error: "identifier and type are required" })
     }
-    databaseService.addToWhitelist(identifier, type, name, "admin")
+    await databaseService.addToWhitelist(identifier, type, name, "admin")
     res.json({ success: true })
   } catch (err) {
     logger.error("Failed to add to whitelist", err)
@@ -657,10 +664,10 @@ router.post("/api/whitelist", (req: Request, res: Response) => {
   }
 })
 
-router.delete("/api/whitelist/:identifier", (req: Request, res: Response) => {
+router.delete("/api/whitelist/:identifier", async (req: Request, res: Response) => {
   try {
     const identifier = String(req.params.identifier)
-    databaseService.removeFromWhitelist(decodeURIComponent(identifier))
+    await databaseService.removeFromWhitelist(decodeURIComponent(identifier))
     res.json({ success: true })
   } catch (err) {
     logger.error("Failed to remove from whitelist", err)
@@ -668,9 +675,9 @@ router.delete("/api/whitelist/:identifier", (req: Request, res: Response) => {
   }
 })
 
-router.get("/api/blacklist", (_req: Request, res: Response) => {
+router.get("/api/blacklist", async (_req: Request, res: Response) => {
   try {
-    const blacklist = databaseService.getBlacklist()
+    const blacklist = await databaseService.getBlacklist()
     res.json({ blacklist })
   } catch (err) {
     logger.error("Failed to get blacklist", err)
@@ -678,13 +685,13 @@ router.get("/api/blacklist", (_req: Request, res: Response) => {
   }
 })
 
-router.post("/api/blacklist", (req: Request, res: Response) => {
+router.post("/api/blacklist", async (req: Request, res: Response) => {
   try {
     const { identifier, type, name, reason } = req.body
     if (!identifier || !type) {
       return res.status(400).json({ error: "identifier and type are required" })
     }
-    databaseService.addToBlacklist(identifier, type, name, reason, "admin")
+    await databaseService.addToBlacklist(identifier, type, name, reason, "admin")
     res.json({ success: true })
   } catch (err) {
     logger.error("Failed to add to blacklist", err)
@@ -692,10 +699,10 @@ router.post("/api/blacklist", (req: Request, res: Response) => {
   }
 })
 
-router.delete("/api/blacklist/:identifier", (req: Request, res: Response) => {
+router.delete("/api/blacklist/:identifier", async (req: Request, res: Response) => {
   try {
     const identifier = String(req.params.identifier)
-    databaseService.removeFromBlacklist(decodeURIComponent(identifier))
+    await databaseService.removeFromBlacklist(decodeURIComponent(identifier))
     res.json({ success: true })
   } catch (err) {
     logger.error("Failed to remove from blacklist", err)

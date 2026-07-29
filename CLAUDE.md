@@ -50,7 +50,7 @@ All major services are singleton instances created at module level:
 - **llmService** (`src/services/llm.service.ts`) - Abstracts AI provider (Gemini/OpenAI/DeepSeek/Kimi), handles chat completions and contextual reply decisions
 - **memoryService** (`src/services/memory.service.ts`) - Stores message history per chat (group/private) with sender names, manages retention window and message limits, tracks participants
 - **userProfileService** (`src/services/userProfile.service.ts`) - Tracks user profiles (phone numbers + WhatsApp display names) to remember who people are across conversations
-- **databaseService** (`src/services/database.service.ts`) - SQLite database for persisting messages, users, conversations, and analytics
+- **databaseService** (`src/services/database.service.ts`) - PostgreSQL access via Prisma, for messages, users, conversations, analytics and the vector knowledge base
 - **wsService** (`src/services/websocket.service.ts`) - WebSocket server for real-time logs, QR code display, and connection status streaming to admin panel
 - **runtimeConfig** (`src/services/runtimeConfig.service.ts`) - Persists config to `runtime_config.json`, allows runtime changes without restart
 - **rateLimiter** (`src/services/ratelimit.service.ts`) - Prevents spam by tracking user request counts per time window
@@ -311,22 +311,83 @@ The admin panel connects to `ws://localhost:3000/ws` for real-time updates:
 - **Connection status**: Shows WhatsApp connection status and connected phone number
 - **Auto-reconnect**: WebSocket automatically reconnects if connection is lost
 
+## Database (PostgreSQL + Prisma + pgvector)
+
+Storage is PostgreSQL, accessed through Prisma. `docker compose up` starts
+`pgvector/pgvector:pg16` and the app together; the app waits on the database's
+healthcheck so first boot cannot race.
+
+**Schema and migrations** live in `prisma/`. Prisma 7 moved the connection URL out
+of `schema.prisma` into `prisma.config.ts`; runtime connections use the `pg`
+driver adapter in `src/lib/prisma.ts`. `npm run prisma:migrate` creates a
+migration in development, `npm run prisma:deploy` applies pending ones (which is
+what the container does on start).
+
+Two conventions the service layer enforces:
+
+- **Timestamps cross the boundary as plain numbers.** They are stored as `BigInt`
+  because epoch milliseconds overflow a 32-bit int, but every method converts to
+  `number` on the way out and back on the way in — so callers, and
+  `JSON.stringify` (which throws on BigInt), never see one.
+- **Vectors are raw SQL.** Prisma has no vector type, so `knowledge_chunks.vector`
+  is declared `Unsupported("vector")` to keep migrations authoritative, and is
+  written and searched with `$queryRaw`.
+
+**Vector search** uses pgvector's `<=>` cosine-distance operator. Vectors are
+stored L2-normalised, so `score = 1 - distance` — identical in meaning to the
+previous dot-product implementation, but computed in Postgres instead of scanning
+every row in JavaScript. Measured: 913 chunks indexed in ~380ms, a query in ~4ms.
+
+The vector column deliberately has **no fixed dimension**: OpenAI
+text-embedding-3-small is 1536-dim and Gemini text-embedding-004 is 768-dim, so
+pinning a size would reject whichever provider was not chosen at migration time.
+The cost is that pgvector's ANN indexes (ivfflat/hnsw) need a fixed dimension, so
+search is exact rather than approximate. `dim` is stored per row and filtered on,
+so vectors of different sizes never get compared. A deployment settled on one
+provider can pin the dimension and add:
+`CREATE INDEX ON knowledge_chunks USING hnsw (vector vector_cosine_ops);`
+
+**Async boundary**: Prisma is async, so `databaseService` methods return promises.
+One deliberate exception to the resulting cascade — `personaService` keeps its
+per-chat overrides in an **in-memory map**, warmed by `personaService.load()` at
+startup and written through on change. `getPersonaForChat()` runs for every
+message and from synchronous code like `decideResponse()`, so it must not await;
+caching also avoids a database round-trip per message for something that changes
+rarely.
+
+## Docker
+
+`docker compose up` runs the dev stack: Postgres with pgvector, plus the bot with
+**hot reload** — `./src`, `./views`, `./public` and `./prisma` are bind-mounted, so
+editing on the host restarts the server in the container. `node_modules` is an
+anonymous volume so the container's Alpine-built modules are never shadowed by the
+host's (the usual cause of "invalid ELF header").
+
+`docker compose --profile prod up` builds the production target instead: compiled
+JavaScript, no dev dependencies, no compiler in the image.
+
+The Dockerfile is staged `base → deps → {dev, builder → production}`. `prisma
+generate` runs at build time so the image needs no network on first boot.
+
+Note: `ADMIN_PASSWORD_HASH` and `SESSION_SECRET` are *not* declared with Compose's
+`${VAR:?}` required syntax, because Compose interpolates every service regardless
+of profile — that would break `docker compose up` for the dev stack. The app
+itself refuses to boot in production without them, which keeps the rule in one
+place.
+
 ## Long-term memory (RAG)
 
 `src/services/rag.service.ts` gives the bot recall beyond its recent-message window.
 
 **Pipeline**: stored messages → chunked (break on a 30-minute silence, 12 messages, or
-1600 chars) → embedded once via `embeddingService` → stored as an L2-normalised Float32
-BLOB in `knowledge_chunks`. At reply time the incoming message is embedded and the
+1600 chars) → embedded once via `embeddingService` → stored as an L2-normalised pgvector
+value in `knowledge_chunks`. At reply time the incoming message is embedded and the
 nearest chunks are prepended to the prompt by `messageHandler.buildContext()`.
 
-**Why SQLite and not a vector database**: vectors are normalised on write, so similarity
-is a dot product and search is a linear scan over `knowledge_chunks` — no extra service to
-deploy, and the bot stays a single self-contained container. Measured at ~1,250 chunks the
-full index+search cycle is well under 100ms. If the corpus ever outgrows a linear scan,
-the access points are narrow (`insertKnowledgeChunks` / `searchKnowledgeChunks`), so a
-dedicated vector store can be swapped in behind them. LangChain is deliberately **not**
-used — the whole pipeline is a few hundred lines against the provider SDKs directly.
+**Storage**: chunks live in PostgreSQL and search runs through pgvector — see the
+Database section above for the indexing and dimension trade-offs. LangChain is
+deliberately **not** used; the whole pipeline is a few hundred lines against the
+provider SDKs directly.
 
 **Indexing** is incremental, driven by a per-chat watermark in `knowledge_state`, and runs
 in the background every 5 minutes (`startBackgroundIndexing`, wired up in `index.ts`).

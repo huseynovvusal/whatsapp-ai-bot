@@ -78,6 +78,31 @@ A long, well-organised reply is the single most robotic thing you can do in a gr
  * between modes swaps the whole voice without editing any text.
  */
 export class PersonaService {
+  /**
+   * Per-chat overrides, mirrored in memory.
+   *
+   * `getPersonaForChat` runs on the hot path — for every message, and from
+   * synchronous code such as `decideResponse` — so it must not await a query.
+   * Overrides change rarely, so the map is loaded once at startup and written
+   * through on every change. Reads stay synchronous and free.
+   */
+  private overrides: Map<string, Persona> = new Map()
+
+  /** Warm the override cache. Called once at startup. */
+  public async load(): Promise<void> {
+    try {
+      const stored = await databaseService.getChatPersonaOverrides()
+      this.overrides = new Map(
+        Object.entries(stored).filter(([, v]) =>
+          PERSONAS.includes(v as Persona)
+        ) as Array<[string, Persona]>
+      )
+      logger.info(`Loaded ${this.overrides.size} per-chat personality override(s)`)
+    } catch (err) {
+      logger.warn("Could not load personality overrides; using the global default", err)
+    }
+  }
+
   /** Global default, used by any chat without an explicit override. */
   public getDefaultPersona(): Persona {
     const value = runtimeConfig.get("defaultPersona") as Persona | undefined
@@ -87,24 +112,27 @@ export class PersonaService {
   /** The persona in force for a chat: its override, else the global default. */
   public getPersonaForChat(chatId?: string): Persona {
     if (chatId) {
-      try {
-        const override = databaseService.getChatPersona(chatId)
-        if (override && PERSONAS.includes(override)) return override
-      } catch (err) {
-        logger.warn(`Failed to read persona override for ${chatId}`, err)
-      }
+      const override = this.overrides.get(chatId)
+      if (override) return override
     }
     return this.getDefaultPersona()
   }
 
+  /** Whether a chat has an explicit override rather than following the default. */
+  public hasOverride(chatId: string): boolean {
+    return this.overrides.has(chatId)
+  }
+
   /** Set (or with `null`, clear) a chat's override. */
-  public setPersonaForChat(chatId: string, persona: Persona | null): void {
+  public async setPersonaForChat(chatId: string, persona: Persona | null): Promise<void> {
     if (persona === null) {
-      databaseService.clearChatPersona(chatId)
+      this.overrides.delete(chatId)
+      await databaseService.clearChatPersona(chatId)
       logger.info(`Persona override cleared for ${chatId}`)
       return
     }
-    databaseService.setChatPersona(chatId, persona)
+    this.overrides.set(chatId, persona)
+    await databaseService.setChatPersona(chatId, persona)
     logger.info(`Persona for ${chatId} set to ${persona}`)
   }
 
@@ -148,7 +176,7 @@ export class PersonaService {
    * style refine it; the length rule goes last so it is the most recent
    * instruction the model reads — length is the hardest rule to hold.
    */
-  public getPromptForChat(chatId?: string): string {
+  public async getPromptForChat(chatId?: string): Promise<string> {
     const persona = this.getPersonaForChat(chatId)
     const sections = [this.getPrompt(persona)]
 
@@ -156,7 +184,7 @@ export class PersonaService {
       if (this.isFreeMode(chatId)) sections.push(FREE_MODE_FRAGMENT)
 
       if (chatId && this.isAdaptive(chatId)) {
-        const style = styleService.getStyleGuidance(chatId)
+        const style = await styleService.getStyleGuidance(chatId)
         if (style) sections.push(style)
       }
 

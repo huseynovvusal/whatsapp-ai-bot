@@ -64,7 +64,7 @@ export class StyleService {
   private cache: Map<string, CacheEntry> = new Map()
 
   /** Profile a chat, or null when there is not enough to go on. */
-  public getProfile(chatId: string): StyleProfile | null {
+  public async getProfile(chatId: string): Promise<StyleProfile | null> {
     const cached = this.cache.get(chatId)
     if (cached && Date.now() - cached.computedAt < CACHE_TTL_MS) {
       return cached.profile
@@ -72,7 +72,7 @@ export class StyleService {
 
     let profile: StyleProfile | null = null
     try {
-      profile = this.computeProfile(chatId)
+      profile = await this.computeProfile(chatId)
     } catch (err) {
       logger.warn(`Failed to profile style for ${chatId}`, err)
     }
@@ -81,12 +81,12 @@ export class StyleService {
     return profile
   }
 
-  private computeProfile(chatId: string): StyleProfile | null {
+  private async computeProfile(chatId: string): Promise<StyleProfile | null> {
     // The bot's own messages are excluded: it should mirror the people in the
     // chat, not drift toward reinforcing its own previous style.
-    const messages = databaseService
-      .getMessages(chatId, SAMPLE_SIZE)
-      .filter((m) => m.sender !== "Bot" && (m.text || "").trim().length > 0)
+    const messages = (await databaseService.getMessages(chatId, SAMPLE_SIZE)).filter(
+      (m) => m.sender !== "Bot" && (m.text || "").trim().length > 0
+    )
 
     if (messages.length < MIN_MESSAGES) return null
 
@@ -194,8 +194,8 @@ ${lines.join("\n")}`
   }
 
   /** Convenience: the guidance block for a chat, or "" when not worth adding. */
-  public getStyleGuidance(chatId: string): string {
-    return this.describe(this.getProfile(chatId))
+  public async getStyleGuidance(chatId: string): Promise<string> {
+    return this.describe(await this.getProfile(chatId))
   }
 
   /** Drop cached profiles (used when a chat's memory is cleared). */

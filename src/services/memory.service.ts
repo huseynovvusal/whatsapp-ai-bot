@@ -86,7 +86,7 @@ export class MemoryService {
 
     // Save to database
     try {
-      databaseService.saveMessage({
+      await databaseService.saveMessage({
         chatId,
         sender: displaySender,
         senderName: displayName,
@@ -97,7 +97,7 @@ export class MemoryService {
 
       // Update analytics
       const today = new Date().toISOString().split("T")[0]
-      databaseService.updateAnalytics(today, { totalMessages: 1 })
+      await databaseService.updateAnalytics(today, { totalMessages: 1 })
     } catch (err) {
       logger.error("Failed to save message to database", err)
     }
@@ -192,7 +192,7 @@ export class MemoryService {
    * The system prompt for a chat, resolved through its personality mode.
    * Read fresh on every call so admin-UI edits take effect without a restart.
    */
-  public getSystemPrompt(chatId?: string): string {
+  public async getSystemPrompt(chatId?: string): Promise<string> {
     return personaService.getPromptForChat(chatId)
   }
 

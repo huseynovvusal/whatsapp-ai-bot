@@ -133,26 +133,26 @@ export class RAGService {
 
     try {
       const model = embeddingService.getModelId()
-      const chatIds = databaseService.getIndexableChatIds()
+      const chatIds = await databaseService.getIndexableChatIds()
 
       for (const chatId of chatIds) {
-        const watermark = databaseService.getLastIndexedTimestamp(chatId)
-        const messages = databaseService.getMessagesAfter(chatId, watermark)
+        const watermark = await databaseService.getLastIndexedTimestamp(chatId)
+        const messages = await databaseService.getMessagesAfter(chatId, watermark)
         if (!messages.length) continue
 
         const chunks = this.chunkMessages(messages)
         if (!chunks.length) {
-          databaseService.setLastIndexedTimestamp(
+          await databaseService.setLastIndexedTimestamp(
             chatId,
             messages[messages.length - 1].timestamp
           )
           continue
         }
 
-        const conversation = databaseService.getConversation(chatId)
+        const conversation = await databaseService.getConversation(chatId)
         const vectors = await embeddingService.embedBatch(chunks.map((c) => c.text))
 
-        databaseService.insertKnowledgeChunks(
+        await databaseService.insertKnowledgeChunks(
           chunks.map((chunk, i) => ({
             chatId,
             chatName: conversation?.chatName || undefined,
@@ -168,7 +168,7 @@ export class RAGService {
 
         // Advance the watermark only as far as the last message we actually
         // chunked, so a partially-consumed tail is picked up next run.
-        databaseService.setLastIndexedTimestamp(
+        await databaseService.setLastIndexedTimestamp(
           chatId,
           chunks[chunks.length - 1].endTimestamp
         )
@@ -195,7 +195,7 @@ export class RAGService {
    * model or chunking, where old vectors are no longer comparable).
    */
   public async reindexAll(chatId?: string): Promise<{ chunks: number; chats: number }> {
-    databaseService.clearKnowledge(chatId)
+    await databaseService.clearKnowledge(chatId)
     logger.info(`Knowledge base cleared${chatId ? ` for ${chatId}` : ""}, rebuilding…`)
     const result = await this.indexNewMessages({ force: true })
     return { chunks: result.chunks, chats: result.chats }
@@ -226,7 +226,7 @@ export class RAGService {
           : Number(runtimeConfig.get("ragMinScore")) || 0.3
 
       const queryVector = await embeddingService.embed(query)
-      const hits = databaseService.searchKnowledgeChunks(queryVector, {
+      const hits = await databaseService.searchKnowledgeChunks(queryVector, {
         chatId: crossChat ? undefined : chatId,
         model: embeddingService.getModelId(),
         limit,

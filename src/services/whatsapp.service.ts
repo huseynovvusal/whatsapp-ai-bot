@@ -504,7 +504,7 @@ export class WhatsAppService {
           if (name) messageInfo.groupName = name
 
           // Update conversation in database
-          databaseService.upsertConversation({
+          await databaseService.upsertConversation({
             chatId: from,
             chatName: name,
             isGroup: true,
@@ -517,7 +517,7 @@ export class WhatsAppService {
       } else {
         // Update private chat conversation
         try {
-          databaseService.upsertConversation({
+          await databaseService.upsertConversation({
             chatId: from,
             chatName: messageInfo.senderName,
             isGroup: false,

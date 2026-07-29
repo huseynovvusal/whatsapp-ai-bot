@@ -205,22 +205,32 @@ async function main(): Promise<void> {
   const { days, reset, clean } = parseArgs(process.argv.slice(2))
 
   // Imported lazily so the env defaults above are in place first.
-  const { databaseService } = await import("@/services/database.service")
-  const db = databaseService.getRawDb()
+  const { prisma } = await import("@/lib/prisma")
 
-  const removeDemoData = db.transaction(() => {
-    const messages = db.prepare(`DELETE FROM messages WHERE ${IS_DEMO_SQL}`).run().changes
-    const conversations = db
-      .prepare(`DELETE FROM conversations WHERE ${IS_DEMO_SQL}`)
-      .run().changes
-    const users = db
-      .prepare(`DELETE FROM users WHERE ${IS_DEMO_PHONE_SQL}`)
-      .run().changes
-    return { messages, conversations, users }
-  })
+  const demoChatFilter = {
+    OR: [
+      { chatId: { startsWith: "demo-" } },
+      { chatId: { startsWith: DEMO_PHONE_PREFIX } },
+    ],
+  }
+  const demoPhoneFilter = {
+    OR: [
+      { phoneNumber: { startsWith: DEMO_SENDER_PREFIX } },
+      { phoneNumber: { startsWith: DEMO_PHONE_PREFIX } },
+    ],
+  }
+
+  const removeDemoData = async () => {
+    const [messages, conversations, users] = await prisma.$transaction([
+      prisma.message.deleteMany({ where: demoChatFilter }),
+      prisma.conversation.deleteMany({ where: demoChatFilter }),
+      prisma.user.deleteMany({ where: demoPhoneFilter }),
+    ])
+    return { messages: messages.count, conversations: conversations.count, users: users.count }
+  }
 
   if (reset || clean) {
-    const removed = removeDemoData()
+    const removed = await removeDemoData()
     console.log(
       `Removed demo data: ${removed.messages} messages, ${removed.conversations} conversations, ${removed.users} users.`
     )
@@ -284,111 +294,121 @@ async function main(): Promise<void> {
 
   generated.sort((a, b) => a.timestamp - b.timestamp)
 
-  const insertMessage = db.prepare(`
-    INSERT INTO messages (chatId, sender, senderName, text, messageType, timestamp)
-    VALUES (?, ?, ?, ?, 'text', ?)
-  `)
-  const upsertConversation = db.prepare(`
-    INSERT INTO conversations (chatId, chatName, isGroup, messageCount, lastMessageAt)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(chatId) DO UPDATE SET
-      chatName = excluded.chatName,
-      messageCount = excluded.messageCount,
-      lastMessageAt = excluded.lastMessageAt,
-      updatedAt = CURRENT_TIMESTAMP
-  `)
-  const upsertUser = db.prepare(`
-    INSERT INTO users (phoneNumber, displayName, pushName, lastSeen, messageCount, firstSeen)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(phoneNumber) DO UPDATE SET
-      displayName = excluded.displayName,
-      pushName = excluded.pushName,
-      lastSeen = excluded.lastSeen,
-      messageCount = excluded.messageCount,
-      firstSeen = MIN(firstSeen, excluded.firstSeen),
-      updatedAt = CURRENT_TIMESTAMP
-  `)
-  const upsertAnalytics = db.prepare(`
-    INSERT INTO analytics (date, totalMessages, totalUsers, totalConversations, apiCalls, tokensUsed)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(date) DO UPDATE SET
-      totalMessages = excluded.totalMessages,
-      totalUsers = excluded.totalUsers,
-      totalConversations = excluded.totalConversations,
-      apiCalls = excluded.apiCalls,
-      tokensUsed = excluded.tokensUsed
-  `)
-
   // Aggregates derived from the generated messages so every view agrees.
   const perDay = new Map<string, { messages: number; apiCalls: number; tokens: number }>()
   const perChat = new Map<string, { count: number; last: number }>()
   const perUser = new Map<string, { count: number; first: number; last: number }>()
 
-  const seed = db.transaction((rows: GeneratedMessage[]) => {
-    for (const row of rows) {
-      insertMessage.run(row.chatId, row.sender, row.senderName, row.text, row.timestamp)
+  for (const row of generated) {
+    const date = new Date(row.timestamp).toISOString().split("T")[0]
+    const day = perDay.get(date) || { messages: 0, apiCalls: 0, tokens: 0 }
+    day.messages++
+    if (row.sender === "Bot") {
+      // Each bot reply corresponds to one LLM call.
+      day.apiCalls++
+      day.tokens += 280 + Math.floor(rand() * 620)
+    }
+    perDay.set(date, day)
 
-      const date = new Date(row.timestamp).toISOString().split("T")[0]
-      const day = perDay.get(date) || { messages: 0, apiCalls: 0, tokens: 0 }
-      day.messages++
-      if (row.sender === "Bot") {
-        // Each bot reply corresponds to one LLM call.
-        day.apiCalls++
-        day.tokens += 280 + Math.floor(rand() * 620)
+    const chat = perChat.get(row.chatId) || { count: 0, last: 0 }
+    chat.count++
+    chat.last = Math.max(chat.last, row.timestamp)
+    perChat.set(row.chatId, chat)
+
+    if (row.sender !== "Bot") {
+      const user = perUser.get(row.sender) || {
+        count: 0,
+        first: row.timestamp,
+        last: row.timestamp,
       }
-      perDay.set(date, day)
-
-      const chat = perChat.get(row.chatId) || { count: 0, last: 0 }
-      chat.count++
-      chat.last = Math.max(chat.last, row.timestamp)
-      perChat.set(row.chatId, chat)
-
-      if (row.sender !== "Bot") {
-        const user = perUser.get(row.sender) || {
-          count: 0,
-          first: row.timestamp,
-          last: row.timestamp,
-        }
-        user.count++
-        user.first = Math.min(user.first, row.timestamp)
-        user.last = Math.max(user.last, row.timestamp)
-        perUser.set(row.sender, user)
-      }
+      user.count++
+      user.first = Math.min(user.first, row.timestamp)
+      user.last = Math.max(user.last, row.timestamp)
+      perUser.set(row.sender, user)
     }
+  }
 
-    for (const chat of CHATS) {
-      const stats = perChat.get(chat.chatId)
-      if (!stats) continue
-      upsertConversation.run(
-        chat.chatId,
-        chat.chatName,
-        chat.isGroup ? 1 : 0,
-        stats.count,
-        stats.last
-      )
-    }
+  // createMany is a single round trip; chunked so the parameter count stays sane.
+  const CHUNK = 500
+  for (let i = 0; i < generated.length; i += CHUNK) {
+    await prisma.message.createMany({
+      data: generated.slice(i, i + CHUNK).map((row) => ({
+        chatId: row.chatId,
+        sender: row.sender,
+        senderName: row.senderName,
+        text: row.text,
+        messageType: "text",
+        timestamp: BigInt(row.timestamp),
+      })),
+    })
+  }
 
-    for (const person of PEOPLE) {
-      const stats = perUser.get(person.phone)
-      if (!stats) continue
-      upsertUser.run(
-        person.phone,
-        person.name,
-        person.name,
-        stats.last,
-        stats.count,
-        stats.first
-      )
-    }
+  for (const chat of CHATS) {
+    const stats = perChat.get(chat.chatId)
+    if (!stats) continue
+    await prisma.conversation.upsert({
+      where: { chatId: chat.chatId },
+      create: {
+        chatId: chat.chatId,
+        chatName: chat.chatName,
+        isGroup: chat.isGroup,
+        messageCount: stats.count,
+        lastMessageAt: BigInt(stats.last),
+      },
+      update: {
+        chatName: chat.chatName,
+        messageCount: stats.count,
+        lastMessageAt: BigInt(stats.last),
+      },
+    })
+  }
 
-    const chatCount = perChat.size
-    const userCount = perUser.size
-    for (const [date, day] of perDay.entries()) {
-      upsertAnalytics.run(date, day.messages, userCount, chatCount, day.apiCalls, day.tokens)
-    }
-  })
+  for (const person of PEOPLE) {
+    const stats = perUser.get(person.phone)
+    if (!stats) continue
+    await prisma.user.upsert({
+      where: { phoneNumber: person.phone },
+      create: {
+        phoneNumber: person.phone,
+        displayName: person.name,
+        pushName: person.name,
+        lastSeen: BigInt(stats.last),
+        firstSeen: BigInt(stats.first),
+        messageCount: stats.count,
+      },
+      update: {
+        displayName: person.name,
+        pushName: person.name,
+        lastSeen: BigInt(stats.last),
+        firstSeen: BigInt(stats.first),
+        messageCount: stats.count,
+      },
+    })
+  }
 
-  seed(generated)
+  const chatCount = perChat.size
+  const userCount = perUser.size
+  for (const [date, day] of perDay.entries()) {
+    await prisma.analytics.upsert({
+      where: { date },
+      create: {
+        date,
+        totalMessages: day.messages,
+        totalUsers: userCount,
+        totalConversations: chatCount,
+        apiCalls: day.apiCalls,
+        tokensUsed: day.tokens,
+      },
+      update: {
+        totalMessages: day.messages,
+        totalUsers: userCount,
+        totalConversations: chatCount,
+        apiCalls: day.apiCalls,
+        tokensUsed: day.tokens,
+      },
+    })
+  }
+
 
   const botMessages = generated.filter((m) => m.sender === "Bot").length
   console.log("Seeded demo data:")
@@ -396,6 +416,7 @@ async function main(): Promise<void> {
   console.log(`  ${perChat.size} conversations, ${perUser.size} users, ${perDay.size} analytics days`)
   console.log("\nOpen the admin panel → Analytics tab to view it.")
   console.log("Remove it again with: npm run seed -- --clean")
+  await prisma.$disconnect()
 }
 
 main().catch((err) => {
