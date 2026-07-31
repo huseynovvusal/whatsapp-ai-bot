@@ -191,11 +191,23 @@ a busy group. Three knobs compose:
 
 - **Settle window** adapts to pace: ~4s in a quiet chat, up to 35s when busy, with a hard
   90s ceiling so a chat that never pauses still gets evaluated.
-- **Participation budget** caps the bot's share of a chat — Selective ~10%, Present ~20%,
-  Talkative ~30% (`companionChattiness`, overridable per chat via the Conversations tab or
-  `!chattiness`). Over the ceiling it stays quiet *without* making a decision call.
+- **Participation budget** caps the bot's share of a chat — Selective ~15%, Present ~30%,
+  Talkative ~50% (`companionChattiness`, overridable per chat via the Conversations tab or
+  `!chattiness`). Over the ceiling it stays quiet *without* making a decision call. Two
+  corrections make the ceiling mean what the label says: the share is measured over **turns**
+  (a reply split into two messages is one turn, not two), and it is **not enforced below 8
+  turns**, because one reply in a chat that has seen two other messages is 33% and tripped
+  even the most talkative setting instantly. Together with the earlier, lower percentages,
+  that was why Companion went quiet unless it was tagged.
 - **Pace awareness** puts "this chat is busy right now" into the decision prompt, since an
-  active three-way exchange rarely needs a fourth voice.
+  active three-way exchange rarely needs a fourth voice. It also reports the **quiet streak**
+  — how many messages have gone by since the bot last spoke — so a bot that has been
+  listening for a while knows joining in is not an interruption.
+
+The decision prompt itself names both sides. An earlier version said only "staying quiet is
+usually right", and the model read that as "stay quiet unless tagged"; it now lists the cases
+where a person *would* speak (a question you can answer, a thread you are already in, a quiet
+chat) alongside the cases where they would not.
 
 Being @mentioned or replied to bypasses all of it — that path is unchanged and prompt. The
 switches are re-checked when the burst settles, not just when it arrives, so disabling the
@@ -206,8 +218,11 @@ were never the prose. Previously every reply quote-replied (because `quotedMessa
 always populated, the non-quoting branch was dead code) and the typing indicator lasted
 exactly as long as the API call regardless of reply length. Now the bot pauses to "read",
 holds `composing` for as long as the text would genuinely take to type (~45wpm, capped),
-splits longer replies into the two or three messages a person would send, and quotes only
-when the thread has moved on. It also gets the local time, how long the chat has been quiet,
+splits a reply into two messages only when it is genuinely long (190+ chars) and has a real
+sentence boundary to break on — never three, and most replies stay whole, because splitting
+*every* reply the same way reads as more mechanical than not splitting at all. It quotes when
+a person would tap "reply": when the thread has moved on, or when the model singled out one
+message out of several (`replyTo` in the decision JSON) rather than answering the newest. It also gets the local time, how long the chat has been quiet,
 and a nudge away from reusing its own recent openers. `companionLateReplies` (off by
 default) occasionally holds a reply a minute or two, like someone who put their phone down.
 
@@ -216,6 +231,23 @@ default) occasionally holds a reply a minute or two, like someone who put their 
 **Outbound guard**: `messageHandler.decideResponse()` is the single place that decides whether the bot may speak. It runs *before* any outbound side effect — reply, typing indicator, or emoji reaction — so a disabled setting produces true silence. Previously the 👀 reaction was sent before the private-chat check, so disabling private replies still produced a visible reaction. The error notice in the `catch` is likewise gated on having committed to replying, so failures never leak into chats the bot should be quiet in.
 
 **System Prompt (applied immediately)**: `runtimeConfig` is the single source of truth for the system prompt. `memoryService.getSystemPrompt()` reads it from runtime config on every call, and `memoryService.setSystemPrompt()` persists it there. Both the admin UI (`/save`) and the `!system` command go through `setSystemPrompt`, so prompt changes take effect on the very next LLM call without a restart.
+
+**Being addressed**: WhatsApp's own @-mention and replying to one of the bot's messages are
+the mechanisms — matched against the bot's JID *and* its LID, on the base JID so a device
+suffix cannot break it. Mentions are read from every message branch, not just
+`extendedTextMessage`, so a tagged photo caption counts. The old plain-text trigger (the
+bot's name appearing anywhere in the message) is now `textMentionTrigger`, **off by
+default**: it fired on any sentence containing the word. When enabled the name is matched on
+a word boundary and regex-escaped. Companion sends **no acknowledgement reaction** when
+tagged — a 👀 read receipt is a bot gesture, and it was the loudest remaining tell; it
+reacts only when the model decides a message is worth a reaction. Assistant keeps the 👀.
+
+**Group roster**: `messageHandler.resolveParticipants()` merges WhatsApp's group membership
+with the people seen in conversation, so the prompt lists **everyone in the group**, marks
+who has not spoken yet and who is a group admin, and can tag any of them. Previously the
+participant list came only from stored messages, so the bot could not name or tag anyone who
+had been quiet. Group metadata is cached for 5 minutes — it was fetched twice per incoming
+message, and WhatsApp rate-limits that call.
 
 **Admin Commands**: Defined in `src/handlers/message.handler.ts:205`, validated via `AdminUtils.isAdmin()` checking against `ADMIN_NUMBERS` config
 
@@ -281,6 +313,8 @@ All commands start with `!` and are processed in `src/handlers/message.handler.t
 - `!mode [assistant|companion]` - Show or set this chat's personality mode
 - `!chattiness [selective|present|talkative|default]` - How much it joins in
 - `!private on|off` - Enable/disable private chat responses
+- `!notes` - Show the standing notes for this chat; `!notes refresh` rewrites them from the
+  recent conversation, `!notes clear` wipes them, `!notes <text>` replaces them by hand
 
 ## Admin Web UI
 
@@ -319,6 +353,18 @@ Available at `http://localhost:3000/admin/login` when bot is running. Mounted vi
   - Index new / Rebuild all / Clear
   - **Test recall**: run a query and see exactly what the bot would remember, with
     similarity scores, without sending a WhatsApp message
+  - **Standing notes**: read and edit the per-chat notes (see "Standing notes" below),
+    rewrite them on demand, or clear them
+- **Connection panel** (top of the page): the WhatsApp link-up is one process with several
+  stages, so it is one panel with a named state — `starting` / `awaiting_scan` / `connected` /
+  `reconnecting`. Previously the panel knew only "connected or not", so the several seconds
+  between starting the bot and WhatsApp producing a QR showed nothing at all and read as a
+  failure; there is now a spinner and a line saying what it is waiting for. The state and any
+  pending QR are also served over HTTP (`GET /api/connection`), so a page opened *after* a QR
+  was broadcast still shows it instead of waiting for the next one.
+- **Settings**: the fields most operators never touch (chat behaviour, memory internals,
+  rate limits, usage limits) sit behind an "Advanced settings" disclosure, which roughly
+  halves the height of the tab.
 - **Logs Tab**: Real-time logs viewer with WebSocket streaming
   - Live log streaming from all services. Every winston log (`logger.*`) is bridged
     to the admin panel via a custom transport in `src/lib/logger.ts`
@@ -429,6 +475,28 @@ in the Memory tab after a model change.
 decides whether something said in one group can surface in another. Off by default.
 
 Retrieval failures are always swallowed — a reply must never fail because recall did.
+
+## Standing notes (the bot's MEMORY.md)
+
+`src/services/groupMemory.service.ts` keeps one small markdown document per chat and puts it
+in **every** prompt. It is the third memory layer, and it answers a question the other two
+cannot: short-term memory is "what was just said" and scrolls away; retrieval only surfaces
+when a query happens to match. Neither gives the bot what a person carries into every
+conversation unprompted — who these people are, what they are in the middle of, what was
+already decided, what the running jokes are.
+
+- Rewritten by the model every `groupMemoryRefreshEvery` messages (default 40) — **one extra
+  completion per refresh, not per message** — driven by a counter on `chat_settings`, and
+  detached from the reply path so answering never waits on housekeeping.
+- Capped at 2,000 characters and asked for under 250 words, so it can never crowd out the
+  prompt, and told to *drop* what is finished rather than accumulate history.
+- **Editable**, from the Memory tab or `!notes <text>`. This matters: auto-written notes are
+  occasionally wrong, and without a correction path a wrong belief would persist into every
+  reply.
+- Switched off with `groupMemoryEnabled`, which mutes both the rewrites and the prompt
+  injection.
+- Every failure is swallowed and logged — a chat must never stop working because a summary
+  did.
 
 ## Fixtures / demo data
 

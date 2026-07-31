@@ -1,6 +1,6 @@
 import { MessageInfo, whatsappService } from "@/services/whatsapp.service"
 import { cleanPhoneNumber as cleanPhoneFromJid } from "@/utils/phone.utils"
-import { parseMentions } from "@/utils/mention.utils"
+import { parseMentions, stripBotName } from "@/utils/mention.utils"
 import { memoryService } from "@/services/memory.service"
 import { llmService, LLMError } from "@/services/llm.service"
 import { rateLimiter } from "@/services/ratelimit.service"
@@ -25,6 +25,7 @@ import {
   avoidRepeatOpeners,
 } from "@/utils/humanize.utils"
 import { personaService, PERSONA_LABELS } from "@/services/persona.service"
+import { groupMemoryService } from "@/services/groupMemory.service"
 import { sanitiseEmoji } from "@/utils/emoji.utils"
 import { trimToLength } from "@/utils/text.utils"
 import { createLogger } from "@/lib/logger"
@@ -33,6 +34,16 @@ import { config } from "@/config/env"
 const logger = createLogger(config.LOG_LEVEL, "MessageHandler")
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** How a reply should be delivered, once the decision to reply has been made. */
+interface ReplyOptions {
+  /** Messages that arrived after the one being answered. */
+  movedOn?: number
+  /** The message to quote, when it is not the one that triggered the reply. */
+  quoteTarget?: MessageInfo
+  /** The bot picked one message out of several — quote it, as a person would. */
+  answeringSpecificMessage?: boolean
+}
 
 export class MessageHandler {
   /**
@@ -142,32 +153,35 @@ export class MessageHandler {
   }
 
   /**
-   * Emoji for acknowledging a message the bot is about to answer.
+   * Emoji for acknowledging a message the bot is about to answer — Assistant
+   * mode only.
    *
-   * Assistant mode keeps the neutral 👀. Companion mode picks something that fits
-   * the message, using a keyword pass rather than an LLM call — this runs on the
-   * direct-reply path, where there is no decision call to piggyback on, so an
-   * extra request here would be paid on every mention.
+   * A read-receipt reaction is a *bot* gesture: it says "request received,
+   * working on it". People do not do it. In Companion mode it was the loudest
+   * remaining tell — tag it and 👀 appeared instantly, every time, before a word
+   * of the reply existed. Companion still reacts, but only when the model
+   * decides a message is worth reacting to (see `evaluateBurst`), which is how
+   * reactions are actually used.
    */
-  private pickAcknowledgementEmoji(info: MessageInfo): string {
-    if (!personaService.isProactive(info.from)) return "👀"
-
-    const text = info.text.toLowerCase()
-    const rules: Array<[RegExp, string]> = [
-      [/\b(thank|thanks|thx|appreciate)\b/, "🙏"],
-      [/\b(congrat|well done|nice one|awesome|amazing)\b/, "🎉"],
-      [/\b(happy birthday|birthday)\b/, "🎂"],
-      [/\b(sorry|apolog)\b/, "🫶"],
-      [/\b(help|urgent|asap|problem|issue|broken|error|bug)\b/, "🫡"],
-      [/\b(love|great|awesome|perfect|brilliant)\b/, "❤️"],
-      [/\b(sad|unfortunately|bad news|failed)\b/, "😔"],
-      [/\b(haha|lol|lmao|funny|😂|🤣)\b/, "😂"],
-      [/\?\s*$/, "🤔"],
-    ]
-    for (const [pattern, emoji] of rules) {
-      if (pattern.test(text)) return emoji
-    }
+  private pickAcknowledgementEmoji(info: MessageInfo): string | undefined {
+    if (personaService.isProactive(info.from)) return undefined
     return "👀"
+  }
+
+  /**
+   * A beat between being tagged and starting to type.
+   *
+   * Companion answers a mention the instant it arrives, which no person does —
+   * they notice, finish what they were doing, and come back. The typing
+   * indicator then covers the rest of the wait, so this only has to cover
+   * "noticing".
+   */
+  private async pauseBeforeAnswering(info: MessageInfo): Promise<void> {
+    if (!personaService.isProactive(info.from)) return
+    if (runtimeConfig.get("humanTiming") === false) return
+    const delay = 1_500 + Math.random() * 4_000
+    logger.debug(`Noticing the mention in ${info.from} for ${Math.round(delay / 1000)}s`)
+    await sleep(delay)
   }
 
   /**
@@ -194,18 +208,22 @@ export class MessageHandler {
     info: MessageInfo,
     text: string,
     mentionedJids?: string[],
-    options: { movedOn?: number } = {}
+    options: ReplyOptions = {}
   ): Promise<void> {
+    // When the model singled out one message in a burst, that message is what
+    // gets quoted — not merely the last one to arrive.
+    const target = options.quoteTarget?.quotedMessage || info.quotedMessage
     const quote =
-      info.quotedMessage &&
+      target &&
       shouldQuote({
         isGroup: info.isGroup,
         messagesSince: options.movedOn ?? 0,
         wasAddressed: info.isMentioned || info.isReplyToBot,
+        answeringSpecificMessage: options.answeringSpecificMessage,
       })
 
-    if (quote && info.quotedMessage) {
-      await whatsappService.sendReply(info.from, text, info.quotedMessage, mentionedJids)
+    if (quote && target) {
+      await whatsappService.sendReply(info.from, text, target, mentionedJids)
     } else {
       await whatsappService.sendMessage(info.from, text, mentionedJids)
     }
@@ -222,7 +240,7 @@ export class MessageHandler {
     info: MessageInfo,
     text: string,
     mentionedJids: string[],
-    options: { movedOn?: number } = {}
+    options: ReplyOptions = {}
   ): Promise<void> {
     const humanTiming = runtimeConfig.get("humanTiming") !== false
     const remember = (sent: string) => {
@@ -253,7 +271,7 @@ export class MessageHandler {
 
       // Only the first part quotes; the rest are follow-ups in the same breath.
       // Mentions ride on the first message so nobody is pinged repeatedly.
-      await this.reply(info, part, i === 0 ? mentionedJids : undefined, options)
+      await this.reply(info, part, i === 0 ? mentionedJids : undefined, i === 0 ? options : {})
       await memoryService.addMessage(info.from, "Bot", part, "Bot")
       conversationPacer.noteMessage(info.from, true)
       remember(part)
@@ -308,6 +326,11 @@ export class MessageHandler {
           : info.text)
       await memoryService.addMessage(info.from, info.sender, remembered, info.senderName)
 
+      // Count the message towards the next rewrite of this chat's standing
+      // notes. Detached on purpose — the refresh is an LLM call, and answering
+      // must never wait on housekeeping.
+      void groupMemoryService.noteMessage(info.from)
+
       const decision = this.decideResponse(info)
       if (!decision.respond) {
         logger.debug(`Staying quiet in ${info.from}: ${decision.reason}`)
@@ -338,10 +361,15 @@ export class MessageHandler {
         return
       }
 
-      // Acknowledge explicit invitations with a reaction.
+      // Acknowledge explicit invitations with a reaction — Assistant only; see
+      // pickAcknowledgementEmoji for why Companion does not.
       if (info.isMentioned || info.isReplyToBot) {
-        await this.react(info, this.pickAcknowledgementEmoji(info))
+        const ack = this.pickAcknowledgementEmoji(info)
+        if (ack) await this.react(info, ack)
       }
+
+      // Companion takes a moment to notice it was tagged before it starts typing.
+      await this.pauseBeforeAnswering(info)
 
       await this.handleAIResponse(info)
     } catch (error) {
@@ -412,6 +440,12 @@ export class MessageHandler {
         await memoryService.getSystemPrompt(info.from)
       )
 
+      // Which message it chose to answer, if any. 1-based in the prompt.
+      const target =
+        decision.replyTo && decision.replyTo >= 1 && decision.replyTo <= burst.length
+          ? burst[decision.replyTo - 1]
+          : undefined
+
       // The same call chose an emoji, so acknowledging costs no extra request.
       // Reacting without replying is the quiet, human way to respond — and it is
       // the whole point of allowing a reaction when shouldReply is false.
@@ -422,7 +456,7 @@ export class MessageHandler {
       // Silent rate-limit: an unprompted interjection should not nag.
       if (!AdminUtils.isAdmin(info.sender) && !rateLimiter.canMakeRequest(info.sender)) return
 
-      const participants = memoryService.getParticipants(info.from)
+      const participants = await this.resolveParticipants(info)
       const shaped = this.shapeReply(
         decision.reply || "",
         personaService.getMaxReplyChars(info.from)
@@ -434,25 +468,36 @@ export class MessageHandler {
       // phone down and picked it back up.
       await this.maybeDelayReply(info)
 
-      // The moment may have passed while we were deciding: if the chat moved on
-      // several messages, someone has probably already said it.
+      // The moment may have passed while we were deciding. Dropping the reply is
+      // only right when it has gone properly stale — the earlier threshold of
+      // four messages threw away perfectly good replies in any lively group, and
+      // a late-but-quoted answer reads fine, which is what the quote is for.
       const movedOn = conversationPacer.messagesSince(info.from, info.receivedAt || 0)
-      if (movedOn >= 4) {
+      if (movedOn >= 8) {
         logger.debug(`Dropping reply in ${info.from}: conversation moved on (${movedOn} messages)`)
         return
       }
 
-      await this.sendHumanReply(info, finalReply, mentionedJids, { movedOn })
+      await this.sendHumanReply(info, finalReply, mentionedJids, {
+        movedOn,
+        quoteTarget: target,
+        // Picking one message out of several, or answering something other than
+        // the newest message, is exactly when a person taps "reply".
+        answeringSpecificMessage: Boolean(target && (burst.length > 1 || movedOn > 0)),
+      })
     } catch (err) {
       logger.warn("Contextual decision failed", err)
     }
   }
 
-  /** Render a settled burst as the "message" the decision call reasons about. */
+  /**
+   * Render a settled burst as the "message" the decision call reasons about.
+   * Numbered, so the model can point at one of them with `replyTo`.
+   */
   private describeBurst(burst: MessageInfo[]): string {
-    if (burst.length === 1) return burst[0].text
+    if (burst.length === 1) return `Message 1 — ${burst[0].senderName || burst[0].sender}: ${burst[0].text}`
     return burst
-      .map((m) => `${m.senderName || m.sender}: ${m.text}`)
+      .map((m, i) => `Message ${i + 1} — ${m.senderName || m.sender}: ${m.text}`)
       .join("\n")
   }
 
@@ -471,6 +516,48 @@ export class MessageHandler {
   }
 
   /**
+   * Everyone in this chat, not just everyone who has spoken in it.
+   *
+   * `memoryService.getParticipants` is derived from stored messages, so in a
+   * group the bot only ever knew the handful of people who had said something
+   * recently — it could not name or tag anybody else, and asking it who was in
+   * the group got a partial answer. The WhatsApp roster is the real membership,
+   * so it is the base, and the conversation supplies the names WhatsApp does not
+   * carry. In a private chat there is no roster to fetch, so nothing changes.
+   */
+  private async resolveParticipants(
+    info: MessageInfo
+  ): Promise<Array<{ name: string; phone: string; isAdmin?: boolean; hasSpoken?: boolean }>> {
+    const fromConversation = memoryService.getParticipants(info.from)
+    if (!info.isGroup) return fromConversation
+
+    try {
+      const roster = await whatsappService.getGroupParticipants(info.from)
+      if (!roster.length) return fromConversation
+
+      const spoken = new Map(fromConversation.map((p) => [p.phone, p.name]))
+      const merged = roster.map((member) => ({
+        // A name learned from a message is the one people actually use.
+        name: spoken.get(member.phone) || member.name || member.phone,
+        phone: member.phone,
+        isAdmin: member.isAdmin,
+        hasSpoken: spoken.has(member.phone) || member.hasSpoken,
+      }))
+
+      // Anyone in the conversation but not in the roster — a former member whose
+      // messages are still in context — is kept rather than dropped.
+      const inRoster = new Set(roster.map((m) => m.phone))
+      for (const p of fromConversation) {
+        if (!inRoster.has(p.phone)) merged.push({ ...p, isAdmin: false, hasSpoken: true })
+      }
+      return merged
+    } catch (err) {
+      logger.debug("Could not fetch the group roster; using known speakers only", err)
+      return fromConversation
+    }
+  }
+
+  /**
    * Assemble everything the LLM should see for this chat:
    * group metadata, recalled long-term memories, and recent conversation.
    */
@@ -479,7 +566,7 @@ export class MessageHandler {
     options: { burst?: MessageInfo[]; pace?: string } = {}
   ): Promise<string> {
     const sections: string[] = []
-    const participants = memoryService.getParticipants(info.from)
+    const participants = await this.resolveParticipants(info)
 
     // Awareness a person has for free and a bot otherwise lacks: what time it
     // is, how long the chat has been quiet, and how busy it is right now.
@@ -506,24 +593,41 @@ export class MessageHandler {
       try {
         const g = await whatsappService.getGroupInfo(info.from)
         if (g) {
+          // Silent members are marked rather than omitted: knowing that someone
+          // is in the room but has not spoken is useful, and it means the bot
+          // can tag them.
           const participantList =
             participants.length > 0
-              ? participants.map((p) => `- ${p.name} (${p.phone})`).join("\n")
+              ? participants
+                  .map(
+                    (p) =>
+                      `- ${p.name} (${p.phone})` +
+                      `${p.isAdmin ? " [group admin]" : ""}${p.hasSpoken === false ? " [has not spoken here yet]" : ""}`
+                  )
+                  .join("\n")
               : "No participants tracked yet"
 
           sections.push(`Group Metadata:
-SUBJECT: ${g.subject || "(no subject)"}
+SUBJECT: ${g.subject || "(no subject)"}${g.description ? `\nDESCRIPTION: ${g.description}` : ""}
 OWNER: ${cleanPhoneFromJid(g.owner || "")}
 TOTAL PARTICIPANTS: ${g.participantCount || 0}
 
-Known Participants (from conversation):
+Members:
 ${participantList}
 
-Instructions: You can mention people by using @Name format (e.g., @John). When you mention someone, make sure to use their exact name as shown in the participant list above.`)
+Instructions: You can mention people by using @Name format (e.g., @John). When you mention someone, make sure to use their exact name as shown in the member list above.`)
         }
       } catch {
         // Group metadata is optional context; carry on without it.
       }
+    }
+
+    // Standing notes: what the bot already knows about this chat.
+    try {
+      const notes = await groupMemoryService.getForPrompt(info.from)
+      if (notes) sections.push(notes)
+    } catch (err) {
+      logger.debug("Could not load standing notes", err)
     }
 
     // Long-term memory: semantically relevant history beyond the recent window.
@@ -589,16 +693,21 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
    */
   private async handleAIResponse(info: MessageInfo): Promise<void> {
     const systemPrompt = await memoryService.getSystemPrompt(info.from)
-    const participants = memoryService.getParticipants(info.from)
+    const participants = await this.resolveParticipants(info)
     const context = await this.buildContext(info)
 
     // Images become descriptions and voice notes become transcripts before the
     // text ever reaches the model.
     const effectiveText = await this.resolveMedia(info)
 
-    // Remove bot mention from text
+    // Drop the name the bot was addressed by, so the model sees the request
+    // rather than the summons. Only relevant when the text trigger is enabled —
+    // a native WhatsApp @-mention is not part of the message body at all.
     const botName = (runtimeConfig.get("botName") as string) || config.BOT_NAME
-    const cleanText = effectiveText.replace(new RegExp(botName, "gi"), "").trim()
+    const cleanText =
+      runtimeConfig.get("textMentionTrigger") === true
+        ? stripBotName(effectiveText, botName)
+        : effectiveText.trim()
 
     logger.info(`Processing AI request from ${info.senderName || info.sender}`)
 
@@ -724,6 +833,43 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
           info.from,
           `✅ Chattiness for this chat set to *${CHATTINESS_LABELS[requested]}*`
         )
+        break
+      }
+
+      case "!notes": {
+        const arg = (args || "").trim()
+
+        if (!arg) {
+          const notes = await groupMemoryService.get(info.from)
+          const state = groupMemoryService.isEnabled() ? "" : "\n\n⚠️ Standing notes are switched off in Settings."
+          await whatsappService.sendMessage(
+            info.from,
+            notes
+              ? `🗒️ *What I remember about this chat*\n\n${notes}${state}`
+              : `🗒️ Nothing noted about this chat yet.\n\nUse *!notes refresh* to write them from the recent conversation.${state}`
+          )
+          break
+        }
+
+        if (arg.toLowerCase() === "clear") {
+          await groupMemoryService.set(info.from, null)
+          await whatsappService.sendMessage(info.from, "✅ Notes cleared for this chat.")
+          break
+        }
+
+        if (arg.toLowerCase() === "refresh") {
+          await whatsappService.sendMessage(info.from, "🗒️ Rewriting my notes from the recent conversation…")
+          const updated = await groupMemoryService.refresh(info.from)
+          await whatsappService.sendMessage(
+            info.from,
+            updated ? `✅ Notes updated:\n\n${updated}` : "❌ Could not update the notes — check the Logs tab."
+          )
+          break
+        }
+
+        // Anything else is the operator writing the notes by hand.
+        await groupMemoryService.set(info.from, arg)
+        await whatsappService.sendMessage(info.from, "✅ Notes replaced for this chat.")
         break
       }
 

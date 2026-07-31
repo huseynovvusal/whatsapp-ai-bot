@@ -1151,6 +1151,112 @@
       gap: 0.75rem;
       justify-content: flex-end;
     }
+
+    /* ---- WhatsApp link-up panel ---- */
+    .link-panel {
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+      background: var(--gray-50);
+      padding: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .link-panel-status {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .link-headline {
+      font-size: 0.938rem;
+      font-weight: 600;
+      color: var(--gray-900);
+    }
+
+    .link-detail {
+      font-size: 0.875rem;
+      color: var(--gray-600);
+      margin-top: 0.125rem;
+    }
+
+    .link-detail:empty { display: none; }
+
+    /* The wait before a QR appears is several seconds; say so, visibly. */
+    .link-spinner {
+      width: 1.25rem;
+      height: 1.25rem;
+      flex: none;
+      border: 2px solid var(--gray-300);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: link-spin 0.8s linear infinite;
+    }
+
+    @keyframes link-spin { to { transform: rotate(360deg); } }
+
+    @media (prefers-reduced-motion: reduce) {
+      .link-spinner { animation-duration: 3s; }
+    }
+
+    .link-qr {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--gray-200);
+      text-align: center;
+    }
+
+    .link-qr img {
+      width: 100%;
+      max-width: 280px;
+      border-radius: 0.375rem;
+      background: #fff;
+    }
+
+    .link-steps {
+      margin-top: 0.75rem;
+      font-size: 0.813rem;
+      color: var(--gray-600);
+      line-height: 1.6;
+    }
+
+    /* ---- Progressive disclosure for the settings form ---- */
+    .settings-advanced > summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--gray-700);
+      padding: 0.625rem 0.875rem;
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+      background: var(--gray-50);
+      user-select: none;
+    }
+
+    .settings-advanced > summary::-webkit-details-marker { display: none; }
+
+    .settings-advanced > summary::before {
+      content: "▸";
+      display: inline-block;
+      margin-right: 0.5rem;
+      color: var(--gray-500);
+    }
+
+    .settings-advanced[open] > summary::before { content: "▾"; }
+
+    .settings-advanced > summary:hover { border-color: var(--gray-300); }
+
+    .settings-advanced[open] > summary { margin-bottom: 1rem; }
+
+    .settings-advanced { margin-bottom: 1.5rem; }
+
+    .notes-editor {
+      width: 100%;
+      min-height: 260px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.813rem;
+      line-height: 1.6;
+    }
   </style>
 </head>
 <body>
@@ -1158,7 +1264,7 @@
   <header class="header">
     <div class="header-content">
       <div class="logo">
-        <span class="logo-icon">🤖</span>
+        <span class="logo-icon">◆</span>
         <h1>WhatsApp AI Bot</h1>
       </div>
       <div class="header-actions">
@@ -1221,8 +1327,8 @@
     <div class="card" id="whatsapp-status-card" style="margin-top: 1.5rem;">
       <div class="card-header">
         <div>
-          <h2 class="card-title">WhatsApp Connection & Bot Control</h2>
-          <p class="card-subtitle">Connection status, QR code, and bot controls</p>
+          <h2 class="card-title">WhatsApp connection</h2>
+          <p class="card-subtitle">Link a device, and turn the bot on or off</p>
         </div>
         <div style="display: flex; gap: 0.75rem; align-items: center;">
           <div id="connection-status-home" class="connection-badge disconnected">
@@ -1232,21 +1338,44 @@
         </div>
       </div>
       <div class="card-body">
+        <!--
+          One panel for the whole link-up, because it is one process with several
+          stages. It used to be two hidden divs that only ever appeared once a QR
+          arrived, so the several seconds before that showed nothing at all and
+          looked like a failure.
+        -->
+        <div class="link-panel" id="link-panel">
+          <div class="link-panel-status">
+            <span class="link-spinner" id="link-spinner" hidden></span>
+            <div>
+              <p class="link-headline" id="link-headline">Checking connection…</p>
+              <p class="link-detail" id="link-detail"></p>
+            </div>
+          </div>
+          <div class="link-qr" id="link-qr" hidden>
+            <img id="qr-image-home" src="" alt="QR code for linking WhatsApp">
+            <p class="link-steps">
+              On your phone: <strong>WhatsApp → Settings → Linked devices → Link a device</strong><br>
+              The code refreshes by itself if it expires.
+            </p>
+          </div>
+        </div>
+
         <!-- Bot Control Toggle -->
         <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
           <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
               <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">Bot Status</h3>
               <p style="font-size: 0.875rem; color: var(--gray-600);">
-                <span id="bot-status-text">Bot is currently OFF</span>
+                <span id="bot-status-text">Stopped</span>
               </p>
             </div>
             <div style="display: flex; gap: 0.5rem;">
               <button id="btn-start-bot" class="btn btn-primary" onclick="toggleBot(true)" style="display: none;">
-                ▶️ Start Bot
+                Start bot
               </button>
               <button id="btn-stop-bot" class="btn btn-secondary" onclick="toggleBot(false)" style="display: none;">
-                ⏸️ Stop Bot
+                Stop bot
               </button>
             </div>
           </div>
@@ -1256,19 +1385,19 @@
         <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
             <div>
-              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">🔒 Access Control</h3>
+              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">Access control</h3>
               <p style="font-size: 0.875rem; color: var(--gray-600);">
                 <span id="access-mode-text">Current mode: <strong id="access-mode-value">Loading...</strong></span>
               </p>
             </div>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               <select id="access-control-mode-select" onchange="updateAccessMode()" style="padding: 0.5rem 1rem; border: 2px solid var(--gray-300); border-radius: 0.5rem; font-size: 0.875rem; background: white; color: var(--gray-900); cursor: pointer;">
-                <option value="disabled">🌍 Free Mode (Allow All)</option>
-                <option value="whitelist">✅ Whitelist Only</option>
-                <option value="blacklist">⛔ Block Blacklisted</option>
+                <option value="disabled">Everyone</option>
+                <option value="whitelist">Whitelist only</option>
+                <option value="blacklist">Everyone except blacklist</option>
               </select>
               <button class="btn btn-secondary" onclick="switchTab('access')" style="padding: 0.5rem 1rem; font-size: 0.875rem;">
-                ⚙️ Manage Lists
+                Manage lists
               </button>
             </div>
           </div>
@@ -1278,40 +1407,24 @@
         <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
             <div>
-              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">💬 Group Response Mode</h3>
+              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">Group response mode</h3>
               <p style="font-size: 0.875rem; color: var(--gray-600);">
                 <span id="group-mode-text">Current mode: <strong id="group-mode-value">Loading...</strong></span>
               </p>
             </div>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               <select id="group-response-mode-select" onchange="updateGroupResponseMode()" style="padding: 0.5rem 1rem; border: 2px solid var(--gray-300); border-radius: 0.5rem; font-size: 0.875rem; background: white; color: var(--gray-900); cursor: pointer;">
-                <option value="mention-only">🏷️ Only When Tagged</option>
-                <option value="contextual">🤖 Smart/Contextual (AI decides)</option>
-                <option value="all">💬 Reply to All Messages</option>
+                <option value="mention-only">Only when tagged</option>
+                <option value="contextual">Smart — it decides when to join in</option>
+                <option value="all">Reply to every message</option>
               </select>
             </div>
           </div>
           <div style="margin-top: 0.75rem; padding: 0.75rem; background: var(--gray-100); border-radius: 0.375rem; font-size: 0.813rem; color: var(--gray-700);">
-            <strong>Modes:</strong><br>
-            • <strong>Only When Tagged:</strong> Bot responds only when mentioned/tagged in group<br>
-            • <strong>Smart/Contextual:</strong> AI decides when to join conversation naturally<br>
-            • <strong>Reply to All:</strong> Bot responds to every message in group
+            Applies to chats in <strong>Assistant</strong> mode. Chats set to <strong>Companion</strong>
+            always decide for themselves whether to join in — use <em>How much it joins in</em>
+            in Settings to tune that.
           </div>
-        </div>
-
-        <div id="qr-container-home" style="display: none;">
-          <p style="margin-bottom: 1rem; color: var(--gray-600);">Scan this QR code with WhatsApp:</p>
-          <div style="text-align: center; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
-            <img id="qr-image-home" src="" alt="QR Code" style="max-width: 350px; width: 100%;">
-          </div>
-          <p style="margin-top: 1rem; color: var(--gray-500); font-size: 0.875rem; text-align: center;">
-            📲 Open WhatsApp → Settings → Linked Devices → Link a Device
-          </p>
-        </div>
-        <div id="connected-info-home" style="display: none;">
-          <p style="color: var(--success); font-weight: 500; font-size: 0.938rem;">
-            ✅ Connected as: <span id="phone-number-home" style="font-family: monospace;">-</span>
-          </p>
         </div>
       </div>
     </div>
@@ -1322,13 +1435,13 @@
 
     <!-- Tabs -->
     <div class="tabs">
-      <button class="tab active" onclick="switchTab('settings')">⚙️ Settings</button>
-      <button class="tab" onclick="switchTab('access')">🔒 Access Control</button>
-      <button class="tab" onclick="switchTab('conversations')">💬 Conversations</button>
-      <button class="tab" onclick="switchTab('people')">👤 People</button>
-      <button class="tab" onclick="switchTab('knowledge')">🧠 Memory</button>
-      <button class="tab" onclick="switchTab('analytics')">📊 Analytics</button>
-      <button class="tab" onclick="switchTab('logs')">📋 Logs</button>
+      <button class="tab active" onclick="switchTab('settings')">Settings</button>
+      <button class="tab" onclick="switchTab('access')">Access</button>
+      <button class="tab" onclick="switchTab('conversations')">Conversations</button>
+      <button class="tab" onclick="switchTab('people')">People</button>
+      <button class="tab" onclick="switchTab('knowledge')">Memory</button>
+      <button class="tab" onclick="switchTab('analytics')">Analytics</button>
+      <button class="tab" onclick="switchTab('logs')">Logs</button>
     </div>
 
     <!-- Settings Tab -->
@@ -1336,40 +1449,40 @@
       <form id="settingsForm" onsubmit="saveSettings(event)">
         <div class="card">
           <div class="card-header">
-            <h2 class="card-title">Bot Configuration</h2>
-            <p class="card-subtitle">Configure bot name, admin numbers, and rate limiting</p>
+            <h2 class="card-title">Basics</h2>
+            <p class="card-subtitle">Who the bot is, and who is allowed to configure it</p>
           </div>
 
           <div class="form-grid">
             <div class="form-group">
-              <label>Bot Name (Mention Trigger)</label>
+              <label>Bot name</label>
               <input type="text" name="botName" value="<%= runtime.botName %>" required>
-              <span class="hint">Users mention this name to trigger the bot (e.g., @bot)</span>
+              <span class="hint">How the bot refers to itself. People get its attention by tagging it with WhatsApp's own @-mention, or by replying to one of its messages — no keyword needed.</span>
             </div>
 
             <div class="form-group">
-              <label>Admin Phone Numbers</label>
+              <label>Admin phone numbers</label>
               <input type="text" name="adminNumbers" value="<%= (runtime.adminNumbers || []).join(',') %>" placeholder="1234567890,9876543210">
               <span class="hint">Comma-separated, digits only (no + or spaces)</span>
             </div>
 
-            <div class="form-row">
-              <div class="form-group">
-                <label>Rate Limit (requests)</label>
-                <input type="number" name="rateLimitMaxRequests" value="<%= runtime.rateLimitMaxRequests %>" min="1" required>
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Also trigger on its name in the text</label>
+                <span class="hint">Off by default. When on, any message containing the bot's name counts as addressing it — including sentences that merely mention the word.</span>
               </div>
-              <div class="form-group">
-                <label>Rate Window (ms)</label>
-                <input type="number" name="rateLimitWindowMs" value="<%= runtime.rateLimitWindowMs %>" min="1000" required>
-              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="textMentionTrigger" <%= runtime.textMentionTrigger ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
             </div>
           </div>
         </div>
 
         <div class="card">
           <div class="card-header">
-            <h2 class="card-title">AI Configuration</h2>
-            <p class="card-subtitle">Configure LLM provider, API keys, and system prompt</p>
+            <h2 class="card-title">AI provider</h2>
+            <p class="card-subtitle">Which model answers, and the key it uses</p>
           </div>
 
           <div class="form-grid">
@@ -1438,13 +1551,13 @@
             </div>
 
             <div class="form-group">
-              <label>🎯 Assistant prompt</label>
+              <label>Assistant prompt</label>
               <textarea name="assistantPrompt" rows="6" placeholder="Leave blank to use the built-in default"><%= runtime.assistantPrompt || '' %></textarea>
               <span class="hint">Blank uses the built-in default (short, clear, task-focused).</span>
             </div>
 
             <div class="form-group">
-              <label>💬 Companion prompt</label>
+              <label>Companion prompt</label>
               <textarea name="companionPrompt" rows="10" placeholder="Leave blank to use the built-in default"><%= runtime.companionPrompt || '' %></textarea>
               <span class="hint">
                 Blank uses the built-in default, which matches the group's tone, keeps replies
@@ -1563,6 +1676,14 @@
           </div>
         </div>
 
+        <!--
+          Everything below is a knob most operators never need to touch. It is
+          collapsed rather than removed: the settings page had twenty-odd fields
+          on one screen, which is why it read as overwhelming.
+        -->
+        <details class="settings-advanced">
+          <summary>Advanced settings — responses, memory, limits</summary>
+
         <div class="card">
           <div class="card-header">
             <h2 class="card-title">Chat Behavior</h2>
@@ -1607,11 +1728,22 @@
               <div class="form-group">
                 <label>Access Control Mode</label>
                 <select name="accessControlMode">
-                  <option value="disabled" <%= (runtime.accessControlMode || 'disabled') === 'disabled' ? 'selected' : '' %>>Disabled (Allow All)</option>
-                  <option value="whitelist" <%= runtime.accessControlMode === 'whitelist' ? 'selected' : '' %>>Whitelist (Only Allowed)</option>
-                  <option value="blacklist" <%= runtime.accessControlMode === 'blacklist' ? 'selected' : '' %>>Blacklist (Block Specific)</option>
+                  <option value="disabled" <%= (runtime.accessControlMode || 'disabled') === 'disabled' ? 'selected' : '' %>>Everyone</option>
+                  <option value="whitelist" <%= runtime.accessControlMode === 'whitelist' ? 'selected' : '' %>>Whitelist only</option>
+                  <option value="blacklist" <%= runtime.accessControlMode === 'blacklist' ? 'selected' : '' %>>Everyone except blacklist</option>
                 </select>
                 <span class="hint">Control which contacts/groups can interact with the bot</span>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Rate limit (messages per person)</label>
+                <input type="number" name="rateLimitMaxRequests" value="<%= runtime.rateLimitMaxRequests %>" min="1" required>
+              </div>
+              <div class="form-group">
+                <label>Rate limit window (ms)</label>
+                <input type="number" name="rateLimitWindowMs" value="<%= runtime.rateLimitWindowMs %>" min="1000" required>
               </div>
             </div>
           </div>
@@ -1680,6 +1812,29 @@
                 <span class="hint">Blank uses the default. Changing this requires a rebuild in the Memory tab.</span>
               </div>
             </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Standing notes per chat</label>
+                <span class="hint">
+                  A short, rolling profile of each chat — who the people are, what is going on,
+                  how the group talks — rewritten from the conversation and included in every
+                  prompt. Read and edit them in the Memory tab.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="groupMemoryEnabled" <%= runtime.groupMemoryEnabled !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Rewrite the notes every N messages</label>
+                <input type="number" name="groupMemoryRefreshEvery" min="5" max="500" value="<%= runtime.groupMemoryRefreshEvery || 40 %>">
+                <span class="hint">One extra AI call per rewrite, not per message. Lower = fresher, more expensive.</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1736,6 +1891,8 @@
             <div id="budget-status" class="mode-callout">Loading current usage…</div>
           </div>
         </div>
+
+        </details>
 
         <div class="btn-group">
           <button type="submit" class="btn btn-primary">
@@ -1925,6 +2082,36 @@
           <button type="button" class="btn btn-primary btn-sm" onclick="searchKnowledge()">Search</button>
         </div>
         <div id="knowledge-results"></div>
+      </div>
+
+      <!--
+        Standing notes: the bot's MEMORY.md for a chat. Kept next to RAG because
+        both are "what it remembers", but this one is short, editable, and always
+        in the prompt rather than retrieved on a match.
+      -->
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">Standing notes</h2>
+            <p class="card-subtitle">
+              A short profile of each chat that goes into every prompt. Rewritten automatically
+              from the conversation — edit it here to correct or add anything, and the bot
+              believes the correction from its next message.
+            </p>
+          </div>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="refreshNotes()">Rewrite now</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="saveNotes()">Save</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="clearNotes()">Clear</button>
+          </div>
+        </div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.75rem; align-items:center;">
+          <select id="notes-chat" class="logs-input" style="flex:1; min-width:240px;" onchange="loadNotes()" aria-label="Chat">
+            <option value="">Pick a chat…</option>
+          </select>
+          <span class="hint" id="notes-meta"></span>
+        </div>
+        <textarea id="notes-editor" class="notes-editor" placeholder="Nothing noted yet. Pick a chat, then use “Rewrite now” to build the notes from its conversation — or just type them yourself."></textarea>
       </div>
     </div>
 
@@ -2271,7 +2458,8 @@
       ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses',
        'ragEnabled', 'ragCrossChat', 'emojiReactions',
        'companionAdaptiveStyle', 'companionFreeMode', 'budgetEnabled',
-       'humanTiming', 'companionLateReplies'].forEach(key => {
+       'humanTiming', 'companionLateReplies', 'groupMemoryEnabled',
+       'textMentionTrigger'].forEach(key => {
         data[key] = formData.has(key);
       });
 
@@ -2417,7 +2605,7 @@
         } else if (message.type === 'connection') {
           const status = message.data;
           updateConnectionStatus(status.connected, status.phoneNumber);
-          updateConnectionStatusHome(status.connected, status.phoneNumber);
+          updateConnectionStatusHome(status.connected, status.phoneNumber, status.state, status.detail);
         }
       };
 
@@ -2723,30 +2911,85 @@
       }
     }
 
-    // Update connection status for home screen too
-    function updateConnectionStatusHome(connected, phoneNumber) {
-      const statusBadge = document.getElementById('connection-status-home');
-      const statusText = statusBadge.querySelector('.status-text');
+    /*
+     * The link-up panel is driven entirely from this one object, so the panel
+     * can never end up in a half-updated state (QR still on screen after the
+     * phone has been linked, "Disconnected" showing while a QR is displayed).
+     */
+    const linkState = { state: 'idle', connected: false, phoneNumber: null, detail: '', qr: null };
 
-      if (connected) {
-        statusBadge.className = 'connection-badge connected';
-        statusText.textContent = 'Connected';
-        document.getElementById('qr-container-home').style.display = 'none';
-        document.getElementById('connected-info-home').style.display = 'block';
-        if (phoneNumber) {
-          document.getElementById('phone-number-home').textContent = phoneNumber;
-        }
-      } else {
-        statusBadge.className = 'connection-badge disconnected';
-        statusText.textContent = 'Disconnected';
-        document.getElementById('connected-info-home').style.display = 'none';
+    const LINK_HEADLINES = {
+      idle: 'Not linked to WhatsApp',
+      starting: 'Getting your QR code ready…',
+      awaiting_scan: 'Scan this code with your phone',
+      connected: 'Linked to WhatsApp',
+      reconnecting: 'Connection lost — reconnecting'
+    };
+
+    function renderLinkPanel() {
+      const busy = linkState.state === 'starting' || linkState.state === 'reconnecting';
+
+      document.getElementById('link-spinner').hidden = !busy;
+      document.getElementById('link-headline').textContent =
+        LINK_HEADLINES[linkState.state] || LINK_HEADLINES.idle;
+
+      let detail = linkState.detail || '';
+      if (linkState.state === 'connected' && linkState.phoneNumber) {
+        detail = linkState.phoneNumber;
+      } else if (linkState.state === 'idle') {
+        detail = 'Start the bot to link a device.';
+      }
+      document.getElementById('link-detail').textContent = detail;
+
+      const qrBox = document.getElementById('link-qr');
+      const showQr = Boolean(linkState.qr) && !linkState.connected;
+      qrBox.hidden = !showQr;
+      if (showQr) document.getElementById('qr-image-home').src = linkState.qr;
+
+      // The badge in the card header follows the same state.
+      const badge = document.getElementById('connection-status-home');
+      if (badge) {
+        badge.className = 'connection-badge ' + (linkState.connected ? 'connected' : 'disconnected');
+        badge.querySelector('.status-text').textContent = linkState.connected
+          ? 'Connected'
+          : (linkState.state === 'awaiting_scan' ? 'Waiting for scan' : busy ? 'Connecting' : 'Disconnected');
       }
     }
 
+    function updateConnectionStatusHome(connected, phoneNumber, state, detail) {
+      linkState.connected = Boolean(connected);
+      linkState.state = state || (connected ? 'connected' : 'idle');
+      if (phoneNumber) linkState.phoneNumber = phoneNumber;
+      linkState.detail = detail || '';
+      // A live connection means the code on screen is spent.
+      if (connected) linkState.qr = null;
+      renderLinkPanel();
+    }
+
     function showQRCodeHome(qrImage) {
-      document.getElementById('qr-image-home').src = qrImage;
-      document.getElementById('qr-container-home').style.display = 'block';
-      document.getElementById('connected-info-home').style.display = 'none';
+      linkState.qr = qrImage;
+      linkState.connected = false;
+      linkState.state = 'awaiting_scan';
+      linkState.detail = '';
+      renderLinkPanel();
+    }
+
+    /*
+     * Ask over HTTP on load rather than waiting for the WebSocket. A QR that was
+     * broadcast before the page opened is otherwise invisible until it expires
+     * and a new one happens to be generated — which is what "the QR code never
+     * showed up" turned out to be.
+     */
+    async function loadConnectionState() {
+      try {
+        const res = await fetch('/api/connection');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.qr) linkState.qr = data.qr;
+        updateConnectionStatusHome(data.connected, data.phoneNumber, data.state, data.detail);
+      } catch (err) {
+        console.error('Failed to load connection state:', err);
+      }
     }
 
     // Bot Control Functions
@@ -2766,12 +3009,12 @@
       const stopBtn = document.getElementById('btn-stop-bot');
 
       if (enabled) {
-        statusText.textContent = '✅ Bot is currently ON (processing messages)';
+        statusText.textContent = 'Running — processing messages';
         statusText.style.color = 'var(--success)';
         startBtn.style.display = 'none';
         stopBtn.style.display = 'inline-flex';
       } else {
-        statusText.textContent = '⏸️ Bot is currently OFF (not processing messages)';
+        statusText.textContent = 'Stopped — not processing messages';
         statusText.style.color = 'var(--danger)';
         startBtn.style.display = 'inline-flex';
         stopBtn.style.display = 'none';
@@ -2819,9 +3062,9 @@
       select.value = mode;
 
       const modeLabels = {
-        'disabled': '🌍 Free Mode (Everyone can use)',
-        'whitelist': '✅ Whitelist Only (Restricted)',
-        'blacklist': '⛔ Blocking Blacklisted'
+        'disabled': 'Everyone',
+        'whitelist': 'Whitelist only',
+        'blacklist': 'Everyone except blacklist'
       };
 
       valueSpan.textContent = modeLabels[mode] || mode;
@@ -2878,9 +3121,9 @@
       select.value = mode;
 
       const modeLabels = {
-        'mention-only': '🏷️ Only When Tagged',
-        'contextual': '🤖 Smart/Contextual',
-        'all': '💬 Reply to All'
+        'mention-only': 'Only when tagged',
+        'contextual': 'Smart — it decides',
+        'all': 'Reply to every message'
       };
 
       valueSpan.textContent = modeLabels[mode] || mode;
@@ -2958,6 +3201,7 @@
     loadBudget();
     loadStats();
     loadBotStatus();
+    loadConnectionState();
     loadAccessControlMode();
     loadGroupResponseMode();
     setInterval(loadStats, 30000); // Refresh every 30s

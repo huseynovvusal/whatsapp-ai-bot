@@ -49,6 +49,7 @@ export class AdminUtils {
 !system <text> - Update the prompt for this chat's mode
 !mode [assistant|companion] - Show or set this chat's personality mode
 !chattiness [selective|present|talkative|default] - How much it joins in
+!notes [refresh|clear|<text>] - Show, rewrite, replace or clear what it remembers about this chat
 !status - Show bot status and memory info
 !private on|off - Enable/disable private chat replies
 

@@ -16,6 +16,7 @@ import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { userProfileService } from "@/services/userProfile.service"
 import { databaseService } from "@/services/database.service"
 import { cleanPhoneNumber as cleanPhoneFromJid, baseFromJid } from "@/utils/phone.utils"
+import { matchesBotName } from "@/utils/mention.utils"
 import { wsService } from "@/services/websocket.service"
 import path from "path"
 
@@ -25,6 +26,8 @@ const logger = createLogger(config.LOG_LEVEL, "WhatsAppService")
 const MAX_TRACKED_MESSAGE_IDS = 1000
 /** Messages older than this are treated as replay, never as live traffic. */
 const STALE_MESSAGE_MS = 5 * 60 * 1000
+/** How long group metadata (subject, roster) is reused before refetching. */
+const GROUP_META_TTL_MS = 5 * 60 * 1000
 
 export type MediaKind = "image" | "audio"
 
@@ -64,6 +67,8 @@ export class WhatsAppService {
   private processedMessageIds: Set<string> = new Set()
   /** Insertion order for the above, so the set can be bounded. */
   private processedMessageOrder: string[] = []
+  /** Group metadata by JID, with the time it was fetched. */
+  private groupMetaCache: Map<string, { meta: any; at: number }> = new Map()
 
   /**
    * Start WhatsApp connection
@@ -74,8 +79,15 @@ export class WhatsAppService {
       return
     }
 
+    // Announce the attempt before anything slow happens. Fetching the WA Web
+    // version and opening the socket take a few seconds, and until now the admin
+    // panel showed nothing during that time — which read as "the QR never came".
+    wsService.setConnectionState("starting", "Connecting to WhatsApp…")
+
     const authPath = path.join(__dirname, "../../auth_info_baileys")
     const { state, saveCreds } = await useMultiFileAuthState(authPath)
+
+    wsService.setConnectionState("starting", "Preparing your QR code…")
 
     const { version, isLatest } = await fetchLatestWaWebVersion()
     logger.info(`Fetched WA Web version: ${version.join('.')}, isLatest: ${isLatest}`)
@@ -132,6 +144,10 @@ export class WhatsAppService {
             `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts})`,
             "WhatsApp"
           )
+          wsService.setConnectionState(
+            "reconnecting",
+            `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts})`
+          )
           setTimeout(async () => {
             this.reconnecting = false
             try {
@@ -175,20 +191,37 @@ export class WhatsAppService {
   }
 
   /**
+   * Group metadata, cached briefly.
+   *
+   * Every incoming group message asked WhatsApp for the group's subject, and
+   * building the prompt asked again for the participant list — two round trips
+   * per message to fetch data that changes maybe once a month. WhatsApp
+   * rate-limits this call, and being throttled is one of the ways a session gets
+   * flagged, so the answer is held for a few minutes.
+   */
+  private async fetchGroupMetadata(groupJid: string, force = false): Promise<any | undefined> {
+    if (!this.sock) return undefined
+    const cached = this.groupMetaCache.get(groupJid)
+    if (!force && cached && Date.now() - cached.at < GROUP_META_TTL_MS) return cached.meta
+
+    try {
+      // @ts-ignore - groupMetadata is present on the socket but loosely typed
+      const meta = await (this.sock.groupMetadata?.(groupJid) || Promise.resolve(undefined))
+      if (meta) this.groupMetaCache.set(groupJid, { meta, at: Date.now() })
+      return meta
+    } catch (err) {
+      logger.warn("Failed to fetch group metadata", err)
+      // A stale answer beats no answer when WhatsApp is throttling us.
+      return cached?.meta
+    }
+  }
+
+  /**
    * Get group metadata (subject/title) for a group JID (e.g. 1203634xxx@g.us)
    */
   public async getGroupName(groupJid: string): Promise<string | undefined> {
-    if (!this.sock) return undefined
-    try {
-      // Baileys exposes groupMetadata on the socket in newer versions
-      // fall back gracefully if not available
-      // @ts-ignore
-      const meta = await (this.sock.groupMetadata?.(groupJid) || Promise.resolve(undefined))
-      return meta?.subject || undefined
-    } catch (err) {
-      logger.warn("Failed to fetch group metadata", err)
-      return undefined
-    }
+    const meta = await this.fetchGroupMetadata(groupJid)
+    return meta?.subject || undefined
   }
 
   /**
@@ -221,22 +254,22 @@ export class WhatsAppService {
   /**
    * Get richer group info: subject + owner + participant count
    */
-  public async getGroupInfo(
-    groupJid: string
-  ): Promise<{ subject?: string; owner?: string; participantCount?: number } | undefined> {
-    if (!this.sock) return undefined
-    try {
-      // @ts-ignore
-      const meta = await (this.sock.groupMetadata?.(groupJid) || Promise.resolve(undefined))
-      if (!meta) return undefined
-      return {
-        subject: meta?.subject,
-        owner: meta?.owner,
-        participantCount: meta?.participants?.length || 0,
+  public async getGroupInfo(groupJid: string): Promise<
+    | {
+        subject?: string
+        owner?: string
+        description?: string
+        participantCount?: number
       }
-    } catch (err) {
-      logger.warn("Failed to fetch group metadata", err)
-      return undefined
+    | undefined
+  > {
+    const meta = await this.fetchGroupMetadata(groupJid)
+    if (!meta) return undefined
+    return {
+      subject: meta?.subject,
+      owner: meta?.owner,
+      description: meta?.desc || undefined,
+      participantCount: meta?.participants?.length || 0,
     }
   }
 
@@ -260,32 +293,39 @@ export class WhatsAppService {
   }
 
   /**
-   * Get group participants with their profile information
+   * Everyone in a group, whether or not they have ever spoken.
+   *
+   * WhatsApp's group metadata carries no display names, so the previous version
+   * returned a list of bare phone numbers and the bot only ever knew the people
+   * it had already heard from. Names are filled in from what we do have: the
+   * `pushName` captured from past messages, then Baileys' contact store. Anyone
+   * still unnamed is returned with the number, which is honest — the roster is
+   * complete either way, which is what the prompt and the People tab need.
    */
-  public async getGroupParticipants(
-    groupJid: string
-  ): Promise<Array<{ id: string; phone: string; name?: string; isAdmin: boolean }>> {
-    if (!this.sock) return []
-    try {
-      // @ts-ignore
-      const meta = await (this.sock.groupMetadata?.(groupJid) || Promise.resolve(undefined))
-      if (!meta || !meta.participants) return []
+  public async getGroupParticipants(groupJid: string): Promise<
+    Array<{ id: string; phone: string; name?: string; isAdmin: boolean; hasSpoken: boolean }>
+  > {
+    const meta = await this.fetchGroupMetadata(groupJid)
+    if (!meta?.participants) return []
 
-      const participants = meta.participants.map((p: any) => {
+    return Promise.all(
+      meta.participants.map(async (p: any) => {
         const phone = cleanPhoneFromJid(p.id)
+        const known = userProfileService.getProfile(phone)
+        let name = known?.name || known?.pushName
+        if (!name) {
+          // Only for people we have never heard from; the store lookup is local.
+          name = await this.getContactName(p.id)
+        }
         return {
           id: p.id,
           phone,
-          name: undefined, // WhatsApp doesn't provide names in group metadata
+          name: name || undefined,
           isAdmin: p.admin === "admin" || p.admin === "superadmin",
+          hasSpoken: Boolean(known),
         }
       })
-
-      return participants
-    } catch (err) {
-      logger.warn("Failed to fetch group participants", err)
-      return []
-    }
+    )
   }
 
   /**
@@ -612,46 +652,80 @@ export class WhatsAppService {
   }
 
   /**
-   * Check if bot is mentioned in the message
+   * Every JID mentioned in a message.
+   *
+   * Mentions do not only live on `extendedTextMessage`: a photo with a caption
+   * that tags someone carries them on `imageMessage.contextInfo`, and the same
+   * goes for video and documents. Reading one branch missed those tags.
+   */
+  private mentionedJidsOf(msg: proto.IWebMessageInfo): string[] {
+    const message = msg.message as Record<string, any> | undefined
+    if (!message) return []
+    const jids = new Set<string>()
+    for (const value of Object.values(message)) {
+      const mentioned = value?.contextInfo?.mentionedJid
+      if (Array.isArray(mentioned)) for (const jid of mentioned) if (jid) jids.add(jid)
+    }
+    return Array.from(jids)
+  }
+
+  /** Every identity WhatsApp may address this bot by: its number and its LID. */
+  private ownJids(): string[] {
+    const user = this.sock?.user as { id?: string; lid?: string } | undefined
+    return [user?.id, user?.lid].filter(Boolean) as string[]
+  }
+
+  /**
+   * Check whether the bot was addressed.
+   *
+   * WhatsApp's own @-mention (and replying to one of the bot's messages) is the
+   * natural way to get someone's attention, and it is what people actually use.
+   * A plain-text trigger — matching the bot's name anywhere in the message — is
+   * off by default: it fired on any sentence that happened to contain the word,
+   * and it made the bot's name feel like a command prefix rather than a name.
    */
   private isBotMentioned(text: string, msg: proto.IWebMessageInfo): boolean {
-    // Check text for @bot mention - use runtime config if available
-    const botName = (runtimeConfig.get("botName") as string) || config.BOT_NAME
-    const mentionedInText = text.toLowerCase().includes(botName.toLowerCase())
-
-    // Check if bot number is in mentioned JIDs
-    const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
-    const botNumber = this.sock?.user?.id
-    let mentionedByJid = false
-
-    if (botNumber && mentionedJids && mentionedJids.length) {
-      // Get bot's base number (994708770718)
-      const botBase = baseFromJid(botNumber)
-
-      // Check each mentioned JID
-      mentionedByJid = mentionedJids.some((j) => {
-        const mentionedBase = baseFromJid(j)
-
-        // Direct match on full JID or base JID
-        if (j === botNumber || mentionedBase === botBase) {
-          return true
-        }
-
-        // Check if mentioned JID contains @lid (Linked Identity Device)
-        // WhatsApp uses LID for linked devices, format: 217248673337520:22@lid
-        // We need to check if this LID belongs to the bot
-        if (j.includes("@lid")) {
-          logger.debug(`LID mentioned: ${j}, Bot number: ${botNumber}`)
-          // For now, accept ANY @lid mention as a mention of the bot
-          // (This is a simplified approach - ideally we'd map LID to main number)
-          return true
-        }
-
-        return false
-      })
+    let mentionedInText = false
+    if (runtimeConfig.get("textMentionTrigger") === true) {
+      const botName = (runtimeConfig.get("botName") as string) || config.BOT_NAME
+      mentionedInText = matchesBotName(text, botName)
     }
 
-    logger.debug(`Mention check - Text: ${mentionedInText}, JID: ${mentionedByJid}, Mentioned JIDs: ${JSON.stringify(mentionedJids)}`)
+    const mentionedJids = this.mentionedJidsOf(msg)
+    const ownJids = this.ownJids()
+    let mentionedByJid = false
+
+    if (ownJids.length && mentionedJids.length) {
+      const ownBases = new Set(ownJids.map((jid) => baseFromJid(jid)))
+      // Compare on the base JID so a device suffix (":22") never breaks the
+      // match. Both the phone-number JID and the LID are checked — accepting
+      // *any* @lid mention, as this used to, meant tagging anybody in the group
+      // woke the bot up.
+      mentionedByJid = mentionedJids.some(
+        (jid) => ownJids.includes(jid) || ownBases.has(baseFromJid(jid))
+      )
+
+      // Fallback for the case that made the old permissive rule tempting: on
+      // some sessions WhatsApp addresses the bot by a linked-identity JID we
+      // have no way to resolve, because the socket never told us our own LID.
+      // Missing a direct tag is worse than the odd false positive, so when our
+      // LID is genuinely unknown an unresolvable @lid still counts — and says so
+      // in the log, rather than silently guessing.
+      const ownLid = (this.sock?.user as { lid?: string } | undefined)?.lid
+      if (!mentionedByJid && !ownLid) {
+        const unresolvedLid = mentionedJids.find((jid) => jid.includes("@lid"))
+        if (unresolvedLid) {
+          logger.warn(
+            `Treating @lid mention ${unresolvedLid} as a mention of this bot: WhatsApp did not report our own LID, so it cannot be matched exactly.`
+          )
+          mentionedByJid = true
+        }
+      }
+    }
+
+    logger.debug(
+      `Mention check - Text: ${mentionedInText}, JID: ${mentionedByJid}, Mentioned JIDs: ${JSON.stringify(mentionedJids)}, Own: ${JSON.stringify(ownJids)}`
+    )
     return mentionedInText || mentionedByJid
   }
 

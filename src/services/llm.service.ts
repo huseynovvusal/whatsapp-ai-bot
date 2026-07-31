@@ -236,21 +236,39 @@ Assistant:`
     userText: string,
     context: string,
     systemPrompt: string
-  ): Promise<{ shouldReply: boolean; reply?: string; reaction?: string }> {
+  ): Promise<{ shouldReply: boolean; reply?: string; reaction?: string; replyTo?: number }> {
     try {
       // The same call also picks an emoji, so reacting costs no extra request.
       // Reacting without replying is a normal, low-noise way to acknowledge a
       // message — so `reaction` is meaningful even when shouldReply is false.
+      //
+      // The guidance below is deliberately two-sided. An earlier version said
+      // only "staying quiet is usually right", and the model took that to mean
+      // "stay quiet unless tagged" — the bot went mute in real group chats.
+      // Naming the cases where a person *would* speak restores the balance.
       const prompt = `${systemPrompt}
 
 ${context}
 
-Decide how to respond to the message below in this group chat. Reply only when you genuinely add something; staying quiet is usually right. A quick emoji reaction is a good middle ground when a message deserves acknowledgement but not a reply.
+You are following this group chat. Decide how to respond to the message (or messages) below, the way someone in the group would.
+
+SPEAK UP when any of these is true:
+- Someone asked a question you can actually answer, even if they did not ask you.
+- Something was said that you have a genuine reaction or opinion about.
+- You are already part of this thread — you said something recently and they are still on it.
+- The chat has been quiet and someone opened a topic worth picking up.
+
+STAY QUIET when:
+- Two other people are mid-exchange and a third voice would interrupt.
+- You would only be agreeing, acknowledging, or restating what was said. React with an emoji instead.
+- You have nothing to add beyond politeness.
+
+If several messages are shown, they are numbered. Set "replyTo" to the number of the one you are actually answering — that becomes a WhatsApp reply to that exact message. Leave it out when you are responding to the conversation as a whole.
 
 Return a single-line JSON object and nothing else:
-{ "shouldReply": true|false, "reply": "<short reply, only if shouldReply is true>", "reaction": "<a single emoji, or empty string for none>" }
+{ "shouldReply": true|false, "reply": "<short reply, only if shouldReply is true>", "reaction": "<a single emoji, or empty string for none>", "replyTo": <message number, or omit> }
 
-Message: ${userText}
+${userText}
 `
 
       let text = ""
@@ -273,11 +291,15 @@ Message: ${userText}
         recordUsage(response.usageMetadata?.totalTokenCount || 0)
       }
 
-      const toDecision = (parsed: Record<string, unknown>) => ({
-        shouldReply: Boolean(parsed.shouldReply),
-        reply: typeof parsed.reply === "string" ? parsed.reply : undefined,
-        reaction: sanitiseEmoji(parsed.reaction),
-      })
+      const toDecision = (parsed: Record<string, unknown>) => {
+        const replyTo = Number(parsed.replyTo)
+        return {
+          shouldReply: Boolean(parsed.shouldReply),
+          reply: typeof parsed.reply === "string" ? parsed.reply : undefined,
+          reaction: sanitiseEmoji(parsed.reaction),
+          replyTo: Number.isInteger(replyTo) && replyTo > 0 ? replyTo : undefined,
+        }
+      }
 
       // Try to parse JSON directly
       try {

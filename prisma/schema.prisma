@@ -141,6 +141,13 @@ model ChatSetting {
   persona String?
   /// "selective" | "present" | "talkative"; null follows the global setting.
   chattiness String?
+  /// Standing notes about this chat, in markdown — the bot's MEMORY.md for the
+  /// group. Rewritten periodically by the model and editable from the admin UI.
+  notes String?
+  notesUpdatedAt DateTime?
+  /// Messages seen since the notes were last rewritten, so the refresh is
+  /// driven by actual conversation rather than a clock.
+  notesMessagesSince Int @default(0)
   updatedAt DateTime @updatedAt
 
   @@map("chat_settings")

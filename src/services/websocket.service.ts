@@ -16,9 +16,27 @@ export interface QRCodeData {
   timestamp: number
 }
 
+/**
+ * Where the WhatsApp link-up has got to.
+ *
+ * The panel used to know only "connected" or "not connected", so between
+ * starting the bot and WhatsApp producing a QR code — which takes a few seconds,
+ * and longer on a slow network — the page showed nothing at all. It looked
+ * broken. Naming the intermediate states lets the UI say what it is waiting for.
+ */
+export type ConnectionState =
+  | "idle" // bot has not been started
+  | "starting" // socket opening, no QR yet
+  | "awaiting_scan" // QR is on screen, waiting for the phone
+  | "connected"
+  | "reconnecting"
+
 export interface ConnectionStatus {
   connected: boolean
+  state: ConnectionState
   phoneNumber?: string
+  /** Filled in on "reconnecting"/"starting" so the UI can explain the wait. */
+  detail?: string
   timestamp: number
 }
 
@@ -27,7 +45,11 @@ export class WebSocketService {
   private wss: WebSocketServer | null = null
   private clients: Set<WebSocket> = new Set()
   private lastQRCode: string | null = null
-  private lastConnectionStatus: ConnectionStatus = { connected: false, timestamp: Date.now() }
+  private lastConnectionStatus: ConnectionStatus = {
+    connected: false,
+    state: "idle",
+    timestamp: Date.now(),
+  }
 
   private constructor() {}
 
@@ -144,16 +166,44 @@ export class WebSocketService {
         data: qrData
       })
 
+      // The QR being on screen is itself a connection state, so the panel can
+      // stop showing "preparing…" without waiting for a separate update.
+      this.setConnectionState("awaiting_scan")
+
       this.log("info", "QR code generated and sent to admin panel", "WhatsApp")
     } catch (error) {
       this.log("error", `Failed to generate QR code: ${error}`, "WhatsApp")
     }
   }
 
-  public sendConnectionStatus(connected: boolean = false, phoneNumber?: string): void {
+  /**
+   * Report where the link-up has got to without claiming it succeeded or failed.
+   * Use `sendConnectionStatus` for the two terminal states.
+   */
+  public setConnectionState(state: ConnectionState, detail?: string): void {
+    // Never let an in-between state overwrite an established connection.
+    if (state !== "connected" && this.lastConnectionStatus.state === "connected") return
+
+    this.lastConnectionStatus = {
+      connected: state === "connected",
+      state,
+      phoneNumber: this.lastConnectionStatus.phoneNumber,
+      detail,
+      timestamp: Date.now(),
+    }
+    this.broadcast({ type: "connection", data: this.lastConnectionStatus })
+  }
+
+  public sendConnectionStatus(
+    connected: boolean = false,
+    phoneNumber?: string,
+    detail?: string
+  ): void {
     const status: ConnectionStatus = {
       connected,
+      state: connected ? "connected" : "reconnecting",
       phoneNumber,
+      detail,
       timestamp: Date.now()
     }
 
@@ -175,6 +225,16 @@ export class WebSocketService {
     } else if (!connected) {
       this.log("warn", "WhatsApp disconnected", "WhatsApp")
     }
+  }
+
+  /** Current link-up state, for the initial page render over HTTP. */
+  public getConnectionStatus(): ConnectionStatus {
+    return { ...this.lastConnectionStatus }
+  }
+
+  /** The QR currently on offer, so a page load does not have to wait for one. */
+  public getLastQRCode(): string | null {
+    return this.lastConnectionStatus.connected ? null : this.lastQRCode
   }
 
   private broadcast(message: Record<string, unknown>): void {

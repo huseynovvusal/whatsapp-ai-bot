@@ -32,19 +32,25 @@ const logger = createLogger(config.LOG_LEVEL, "ConversationPacer")
  * Direct mentions never come through here; being addressed gets a prompt answer.
  */
 
-/** How chatty Companion is allowed to be, as a share of recent messages. */
+/**
+ * How chatty Companion is allowed to be, as a share of recent *turns*.
+ *
+ * A "turn" is one thing the bot said, however many WhatsApp messages that took —
+ * see `getPace`. Measuring raw messages made a two-part reply count double and
+ * pushed the bot over its ceiling twice as fast as the label implied.
+ */
 export const CHATTINESS_LEVELS = {
-  selective: 0.1,
-  present: 0.2,
-  talkative: 0.3,
+  selective: 0.15,
+  present: 0.3,
+  talkative: 0.5,
 } as const
 
 export type Chattiness = keyof typeof CHATTINESS_LEVELS
 
 export const CHATTINESS_LABELS: Record<Chattiness, string> = {
-  selective: "Selective (~10%)",
-  present: "Present (~20%)",
-  talkative: "Talkative (~30%)",
+  selective: "Selective (~15%)",
+  present: "Present (~30%)",
+  talkative: "Talkative (~50%)",
 }
 
 export function isChattiness(value: unknown): value is Chattiness {
@@ -59,6 +65,14 @@ const MAX_BURST_AGE_MS = 90_000
 /** Messages considered when measuring pace and the bot's share. */
 const ACTIVITY_WINDOW_MS = 5 * 60 * 1000
 const SHARE_WINDOW_MS = 30 * 60 * 1000
+/**
+ * The participation ceiling is a *proportion*, and a proportion of three
+ * messages is meaningless: one reply in a chat that has seen two other messages
+ * is 33%, which trips even the most talkative setting instantly. Below this many
+ * turns the ceiling is not enforced at all, which is what a quiet group needs —
+ * it was the main reason Companion mode felt mute unless it was tagged.
+ */
+const MIN_SHARE_SAMPLE = 8
 
 interface PendingBurst<T> {
   items: T[]
@@ -79,10 +93,24 @@ export interface ChatPace {
   speakers: number
   /** Messages per minute. */
   rate: number
-  /** The bot's share of recent messages, 0-1. */
+  /** The bot's share of recent turns, 0-1. */
   botShare: number
+  /** Turns (bot + human) the share was measured over. */
+  turns: number
+  /** Human messages since the bot last said anything in this chat. */
+  quietStreak: number
   /** A short line describing the pace, for the decision prompt. */
   description: string
+}
+
+/** Collapse a run of consecutive bot messages into a single turn. */
+function toTurns(entries: ActivityEntry[]): boolean[] {
+  const turns: boolean[] = []
+  for (const entry of entries) {
+    if (entry.fromBot && turns[turns.length - 1] === true) continue
+    turns.push(entry.fromBot)
+  }
+  return turns
 }
 
 export class ConversationPacer<T = unknown> {
@@ -116,7 +144,19 @@ export class ConversationPacer<T = unknown> {
 
     const humanRecent = recent.filter((e) => !e.fromBot)
     const rate = recent.length / (ACTIVITY_WINDOW_MS / 60000)
-    const botShare = forShare.length ? forShare.filter((e) => e.fromBot).length / forShare.length : 0
+
+    // Share is measured over turns, not messages: one reply split into three
+    // WhatsApp messages is still one contribution to the conversation.
+    const turnList = toTurns(forShare)
+    const botShare = turnList.length ? turnList.filter(Boolean).length / turnList.length : 0
+
+    // How long the bot has been listening. A long streak is a signal that it is
+    // safe — and probably overdue — to say something.
+    let quietStreak = 0
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].fromBot) break
+      quietStreak++
+    }
 
     // Speaker count is not tracked per person here; the handler passes richer
     // context separately. This is a coarse "is more than one person talking".
@@ -133,7 +173,19 @@ export class ConversationPacer<T = unknown> {
       description = "This chat has been silent for a while."
     }
 
-    return { recentMessages: recent.length, speakers, rate, botShare, description }
+    if (quietStreak >= 6) {
+      description += ` You have not said anything for the last ${quietStreak} messages, so joining in now would not be intrusive.`
+    }
+
+    return {
+      recentMessages: recent.length,
+      speakers,
+      rate,
+      botShare,
+      turns: turnList.length,
+      quietStreak,
+      description,
+    }
   }
 
   /**
@@ -187,7 +239,11 @@ export class ConversationPacer<T = unknown> {
     override?: Chattiness | null
   ): { allowed: boolean; botShare: number; target: number; reason?: string } {
     const target = this.getChattinessTarget(chatId, override)
-    const { botShare } = this.getPace(chatId)
+    const { botShare, turns } = this.getPace(chatId)
+    // Too small a sample for a percentage to mean anything — see MIN_SHARE_SAMPLE.
+    if (turns < MIN_SHARE_SAMPLE) {
+      return { allowed: true, botShare, target }
+    }
     if (botShare >= target) {
       return {
         allowed: false,

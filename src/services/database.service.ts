@@ -888,6 +888,65 @@ export class DatabaseService {
     return out
   }
 
+  // ============= PER-CHAT NOTES (the bot's MEMORY.md) =============
+
+  public async getChatNotes(chatId: string): Promise<{
+    notes: string | null
+    updatedAt: number | null
+    messagesSince: number
+  }> {
+    const row = await prisma.chatSetting.findUnique({ where: { chatId } })
+    return {
+      notes: row?.notes ?? null,
+      updatedAt: row?.notesUpdatedAt ? row.notesUpdatedAt.getTime() : null,
+      messagesSince: row?.notesMessagesSince ?? 0,
+    }
+  }
+
+  /** Replace a chat's notes and reset the "messages since" counter. */
+  public async setChatNotes(chatId: string, notes: string | null): Promise<void> {
+    const data = {
+      notes,
+      notesUpdatedAt: notes ? new Date() : null,
+      notesMessagesSince: 0,
+    }
+    await prisma.chatSetting.upsert({
+      where: { chatId },
+      create: { chatId, ...data },
+      update: data,
+    })
+  }
+
+  /**
+   * Count one more message towards the next notes refresh, returning the new
+   * total. Upsert rather than update so a chat with no settings row still
+   * accumulates a count.
+   */
+  public async bumpChatNotesCounter(chatId: string): Promise<number> {
+    const row = await prisma.chatSetting.upsert({
+      where: { chatId },
+      create: { chatId, notesMessagesSince: 1 },
+      update: { notesMessagesSince: { increment: 1 } },
+      select: { notesMessagesSince: true },
+    })
+    return row.notesMessagesSince
+  }
+
+  /** Every chat that currently has notes, for the admin UI listing. */
+  public async listChatNotes(): Promise<
+    Array<{ chatId: string; notes: string; updatedAt: number | null }>
+  > {
+    const rows = await prisma.chatSetting.findMany({
+      where: { notes: { not: null } },
+      orderBy: { notesUpdatedAt: "desc" },
+    })
+    return rows.map((row) => ({
+      chatId: row.chatId,
+      notes: row.notes as string,
+      updatedAt: row.notesUpdatedAt ? row.notesUpdatedAt.getTime() : null,
+    }))
+  }
+
   // ============= UTILITY =============
 
   public async getStats(): Promise<{

@@ -17,6 +17,8 @@ import {
 import { styleService } from "@/services/style.service"
 import { isChattiness, CHATTINESS_LABELS } from "@/services/pacer.service"
 import { embeddingService } from "@/services/embedding.service"
+import { groupMemoryService } from "@/services/groupMemory.service"
+import { wsService } from "@/services/websocket.service"
 import { AdminUtils } from "@/utils/admin.utils"
 import { cleanPhoneNumber } from "@/utils/phone.utils"
 import { config } from "@/config/env"
@@ -330,6 +332,18 @@ router.post("/save", (req: Request, res: Response) => {
       runtimeConfig.set("ragMinScore", Math.max(0, Math.min(1, nonNegative(body.ragMinScore, 0.3))))
     if ("embeddingModel" in body)
       runtimeConfig.set("embeddingModel", String(body.embeddingModel || "").trim())
+
+    // Standing notes per chat
+    if ("groupMemoryEnabled" in body)
+      runtimeConfig.set("groupMemoryEnabled", Boolean(body.groupMemoryEnabled))
+    if ("groupMemoryRefreshEvery" in body)
+      runtimeConfig.set(
+        "groupMemoryRefreshEvery",
+        Math.max(5, Math.min(500, nonNegative(body.groupMemoryRefreshEvery, 40)))
+      )
+
+    if ("textMentionTrigger" in body)
+      runtimeConfig.set("textMentionTrigger", Boolean(body.textMentionTrigger))
     // If credentials or provider changed, reload the LLM and embedding clients
     if (
       "geminiApiKey" in body ||
@@ -379,6 +393,27 @@ router.get("/api/bot/status", (_req: Request, res: Response) => {
   } catch (err) {
     logger.error("Failed to get bot status", err)
     res.status(500).json({ error: "Failed to get bot status" })
+  }
+})
+
+/**
+ * Where the WhatsApp link-up has got to, plus the QR if one is waiting.
+ *
+ * The panel learned this over the WebSocket only, so a page opened before the
+ * socket attached — or after a QR had already been broadcast — showed an empty
+ * box with no explanation. Serving it over HTTP means the first paint is always
+ * correct, and the WebSocket only has to deliver changes.
+ */
+router.get("/api/connection", (_req: Request, res: Response) => {
+  try {
+    res.json({
+      ...wsService.getConnectionStatus(),
+      qr: wsService.getLastQRCode(),
+      identity: whatsappService.getOwnIdentity(),
+    })
+  } catch (err) {
+    logger.error("Failed to get connection status", err)
+    res.status(500).json({ error: "Failed to get connection status" })
   }
 })
 
@@ -484,6 +519,62 @@ router.post("/api/chats/:chatId/chattiness", async (req: Request, res: Response)
   } catch (err) {
     logger.error("Failed to set chat chattiness", err)
     res.status(500).json({ error: "Failed to set chat chattiness" })
+  }
+})
+
+// ============= STANDING NOTES (the bot's MEMORY.md per chat) =============
+
+// Every chat that has notes, for the listing.
+router.get("/api/notes", async (_req: Request, res: Response) => {
+  try {
+    res.json({
+      enabled: groupMemoryService.isEnabled(),
+      chats: await databaseService.listChatNotes(),
+    })
+  } catch (err) {
+    logger.error("Failed to list chat notes", err)
+    res.status(500).json({ error: "Failed to list chat notes" })
+  }
+})
+
+router.get("/api/chats/:chatId/notes", async (req: Request, res: Response) => {
+  try {
+    const chatId = decodeURIComponent(String(req.params.chatId))
+    const stored = await databaseService.getChatNotes(chatId)
+    res.json({ chatId, enabled: groupMemoryService.isEnabled(), ...stored })
+  } catch (err) {
+    logger.error("Failed to read chat notes", err)
+    res.status(500).json({ error: "Failed to read chat notes" })
+  }
+})
+
+// Replace the notes by hand. An empty body clears them.
+router.put("/api/chats/:chatId/notes", async (req: Request, res: Response) => {
+  try {
+    const chatId = decodeURIComponent(String(req.params.chatId))
+    const notes = typeof req.body?.notes === "string" ? req.body.notes : null
+    await groupMemoryService.set(chatId, notes)
+    res.json({ success: true, ...(await databaseService.getChatNotes(chatId)) })
+  } catch (err) {
+    logger.error("Failed to save chat notes", err)
+    res.status(500).json({ error: "Failed to save chat notes" })
+  }
+})
+
+// Rewrite the notes now, from the chat's recent conversation.
+router.post("/api/chats/:chatId/notes/refresh", async (req: Request, res: Response) => {
+  try {
+    const chatId = decodeURIComponent(String(req.params.chatId))
+    const notes = await groupMemoryService.refresh(chatId)
+    if (!notes) {
+      return res
+        .status(422)
+        .json({ error: "Nothing to summarise yet, or the model returned no usable notes" })
+    }
+    res.json({ success: true, notes })
+  } catch (err) {
+    logger.error("Failed to refresh chat notes", err)
+    res.status(500).json({ error: "Failed to refresh chat notes" })
   }
 })
 

@@ -29,6 +29,48 @@ export function createMention(name: string, phone: string): {
   }
 }
 
+/** Escape a user-supplied string so it can be used inside a RegExp. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * Does this message address the bot by name?
+ *
+ * Only used when the optional plain-text trigger is switched on. Matched on a
+ * word boundary and with an optional leading "@", so a bot called "Nova" is
+ * addressed by "@Nova" or "Nova, what do you think" but not by "innovation".
+ * The name is escaped because it comes from operator configuration and may
+ * legitimately contain "+" or "." — unescaped, it used to be a regex injection.
+ */
+export function matchesBotName(text: string, botName: string): boolean {
+  const name = botName.trim().replace(/^@/, "")
+  if (!name) return false
+  try {
+    // `\b` is only meaningful when the name ends in a word character; a name
+    // like "c++" ends in punctuation, where a trailing `\b` can never match.
+    const trailing = /[\p{L}\p{N}_]$/u.test(name) ? "\\b" : ""
+    return new RegExp(`(^|[^\\p{L}\\p{N}])@?${escapeRegExp(name)}${trailing}`, "iu").test(text)
+  } catch {
+    return text.toLowerCase().includes(name.toLowerCase())
+  }
+}
+
+/** Remove the way the bot was addressed, so the model sees the request itself. */
+export function stripBotName(text: string, botName: string): string {
+  const name = botName.trim().replace(/^@/, "")
+  if (!name) return text.trim()
+  try {
+    const trailing = /[\p{L}\p{N}_]$/u.test(name) ? "\\b" : ""
+    return text
+      .replace(new RegExp(`@?${escapeRegExp(name)}${trailing}`, "giu"), " ")
+      .replace(/\s{2,}/g, " ")
+      .trim()
+  } catch {
+    return text.trim()
+  }
+}
+
 /**
  * Extract phone numbers mentioned in text (e.g., "Hey @+1234567890")
  * @param text - Message text

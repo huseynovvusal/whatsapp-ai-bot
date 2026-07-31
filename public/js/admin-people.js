@@ -317,8 +317,11 @@
         .then(function (data) {
           chatsCache = data.conversations || []
           fillChatSelect("knowledge-scope", "All chats")
+          fillChatSelect("notes-chat", "Pick a chat…")
         })
         .catch(function () { /* selector stays as "All chats" */ })
+    } else {
+      fillChatSelect("notes-chat", "Pick a chat…")
     }
 
     fetch("/api/knowledge/status")
@@ -445,6 +448,116 @@
       })
   }
 
+  // -------------------------------------------------------- standing notes
+  // The bot's MEMORY.md for a chat: short, always in the prompt, and editable.
+  // Editable matters — auto-written notes are occasionally wrong, and without a
+  // way to correct them a wrong belief would persist through every reply.
+
+  function selectedNotesChat() {
+    var select = document.getElementById("notes-chat")
+    return select ? select.value : ""
+  }
+
+  function setNotesMeta(text) {
+    var meta = document.getElementById("notes-meta")
+    if (meta) meta.textContent = text || ""
+  }
+
+  function loadNotes() {
+    var chatId = selectedNotesChat()
+    var editor = document.getElementById("notes-editor")
+    if (!editor) return
+    if (!chatId) {
+      editor.value = ""
+      setNotesMeta("")
+      return
+    }
+
+    fetch("/api/chats/" + encodeURIComponent(chatId) + "/notes")
+      .then(function (r) { return r.json() })
+      .then(function (data) {
+        editor.value = data.notes || ""
+        var parts = []
+        if (!data.enabled) parts.push("Standing notes are switched off in Settings")
+        parts.push(data.updatedAt
+          ? "Updated " + new Date(data.updatedAt).toLocaleString()
+          : "Never written")
+        parts.push(data.messagesSince + " message(s) since the last rewrite")
+        setNotesMeta(parts.join(" · "))
+      })
+      .catch(function (err) {
+        console.error("Failed to load notes:", err)
+        setNotesMeta("Could not load the notes.")
+      })
+  }
+
+  function saveNotes() {
+    var chatId = selectedNotesChat()
+    var editor = document.getElementById("notes-editor")
+    if (!chatId || !editor) {
+      if (typeof showAlert === "function") showAlert("error", "Pick a chat first.")
+      return
+    }
+    fetch("/api/chats/" + encodeURIComponent(chatId) + "/notes", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: editor.value }),
+    })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b } }) })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.body.error || "Save failed")
+        if (typeof showAlert === "function") showAlert("success", "Notes saved")
+        loadNotes()
+      })
+      .catch(function (err) {
+        console.error(err)
+        if (typeof showAlert === "function") showAlert("error", String(err.message || err))
+      })
+  }
+
+  function clearNotes() {
+    var chatId = selectedNotesChat()
+    if (!chatId) {
+      if (typeof showAlert === "function") showAlert("error", "Pick a chat first.")
+      return
+    }
+    if (!confirm("Clear everything the bot has noted about this chat?")) return
+    fetch("/api/chats/" + encodeURIComponent(chatId) + "/notes", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: "" }),
+    })
+      .then(function () {
+        if (typeof showAlert === "function") showAlert("success", "Notes cleared")
+        loadNotes()
+      })
+      .catch(function (err) {
+        console.error(err)
+        if (typeof showAlert === "function") showAlert("error", "Could not clear the notes")
+      })
+  }
+
+  function refreshNotes() {
+    var chatId = selectedNotesChat()
+    if (!chatId) {
+      if (typeof showAlert === "function") showAlert("error", "Pick a chat first.")
+      return
+    }
+    setNotesMeta("Rewriting from the recent conversation…")
+    fetch("/api/chats/" + encodeURIComponent(chatId) + "/notes/refresh", { method: "POST" })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b } }) })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.body.error || "Rewrite failed")
+        if (typeof showAlert === "function") showAlert("success", "Notes rewritten")
+        loadNotes()
+      })
+      .catch(function (err) {
+        console.error(err)
+        if (typeof showAlert === "function") showAlert("error", String(err.message || err))
+        loadNotes()
+      })
+  }
+
   // Enter key runs the recall search
   document.addEventListener("keydown", function (ev) {
     if (ev.key !== "Enter") return
@@ -464,4 +577,8 @@
   window.reindexKnowledge = reindexKnowledge
   window.clearKnowledge = clearKnowledge
   window.searchKnowledge = searchKnowledge
+  window.loadNotes = loadNotes
+  window.saveNotes = saveNotes
+  window.clearNotes = clearNotes
+  window.refreshNotes = refreshNotes
 })()

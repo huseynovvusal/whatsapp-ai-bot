@@ -52,49 +52,80 @@ export function shouldQuote(options: {
   messagesSince: number
   /** True when the bot was directly addressed. */
   wasAddressed: boolean
+  /**
+   * True when the bot picked one particular message out of several to answer —
+   * the model named it, or the message is not the most recent one in the chat.
+   * This is exactly the case where a person taps "reply" on WhatsApp.
+   */
+  answeringSpecificMessage?: boolean
 }): boolean {
   // In a one-to-one chat there is never anything to disambiguate.
   if (!options.isGroup) return false
-  // The thread has moved on: quoting is genuinely helpful now.
-  if (options.messagesSince >= 2) return true
+  // Answering one message out of several: quote it, the way a person would.
+  if (options.answeringSpecificMessage) return true
+  // The thread has moved on, so it is no longer obvious what this answers.
+  if (options.messagesSince >= 1) return true
   // Answering a direct mention immediately needs no quote.
   return false
 }
 
 /**
- * Split a reply into the two or three short messages a person would actually
- * send, rather than one tidy paragraph.
- *
- * Conservative on purpose: only splits when there are clear sentence boundaries
- * and the whole thing is long enough to be worth breaking up. Anything with a
- * list, code or a link is left alone — those read worse in pieces.
+ * Length below which a reply is always sent as one message. Most chat messages
+ * are shorter than this, so most replies are never split — which is the point.
  */
-export function splitIntoBursts(text: string, maxParts: number = 3): string[] {
+const BURST_MIN_CHARS = 190
+/** Each part of a split reply has to be worth being its own message. */
+const BURST_MIN_PART_CHARS = 60
+
+/**
+ * Split a reply into the messages a person would actually send.
+ *
+ * Almost always: one. The previous version split anything over 80 characters
+ * into up to three parts, so nearly every reply arrived as a burst of three —
+ * which reads as *more* mechanical than a single message, not less, because it
+ * happened every single time regardless of what was being said.
+ *
+ * Now a reply is only broken up when it is genuinely long *and* has a real
+ * boundary to break on, and never into more than two messages. Anything with a
+ * list, code or a link is left intact — those read worse in pieces.
+ */
+export function splitIntoBursts(text: string, maxParts: number = 2): string[] {
   const trimmed = text.trim()
   if (!trimmed) return []
 
   // Leave structured content intact.
   if (/https?:\/\/|```|^\s*[-*\d]\.?\s/m.test(trimmed)) return [trimmed]
-  if (trimmed.length < 80) return [trimmed]
+  if (trimmed.length < BURST_MIN_CHARS || maxParts < 2) return [trimmed]
 
   const sentences = trimmed.match(/[^.!?]+[.!?]*\s*/g)?.map((s) => s.trim()).filter(Boolean)
-  if (!sentences || sentences.length < 2) return [trimmed]
+  // Two sentences are a thought and its qualifier; people send those together.
+  // Three or more is where a natural "…and also" break actually exists.
+  if (!sentences || sentences.length < 3) return [trimmed]
 
-  // Group sentences into at most `maxParts` roughly even chunks.
-  const parts: string[] = []
-  const perPart = Math.ceil(sentences.length / Math.min(maxParts, sentences.length))
-  for (let i = 0; i < sentences.length; i += perPart) {
-    const part = sentences.slice(i, i + perPart).join(" ").trim()
-    if (part) parts.push(part)
+  // Break at the sentence boundary nearest the middle, so both halves are
+  // substantial rather than one long message and a stray fragment.
+  const target = trimmed.length / 2
+  let bestIndex = -1
+  let bestDistance = Infinity
+  let consumed = 0
+  for (let i = 0; i < sentences.length - 1; i++) {
+    consumed += sentences[i].length + 1
+    const distance = Math.abs(consumed - target)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      bestIndex = i
+    }
   }
+  if (bestIndex < 0) return [trimmed]
 
-  // A trailing fragment of one or two words belongs with the previous message.
-  if (parts.length > 1 && countWords(parts[parts.length - 1]) <= 2) {
-    const tail = parts.pop() as string
-    parts[parts.length - 1] = `${parts[parts.length - 1]} ${tail}`.trim()
-  }
+  const head = sentences.slice(0, bestIndex + 1).join(" ").trim()
+  const tail = sentences.slice(bestIndex + 1).join(" ").trim()
 
-  return parts.length ? parts : [trimmed]
+  // A split that produces a scrap is worse than no split at all.
+  if (head.length < BURST_MIN_PART_CHARS || tail.length < BURST_MIN_PART_CHARS) return [trimmed]
+  if (countWords(tail) <= 3) return [trimmed]
+
+  return [head, tail]
 }
 
 /** Pause between two bursts — long enough to read as separate typing. */

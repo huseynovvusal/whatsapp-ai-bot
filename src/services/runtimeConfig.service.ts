@@ -11,6 +11,13 @@ export interface RuntimeConfigSchema {
   rateLimitMaxRequests?: number
   rateLimitWindowMs?: number
   botName?: string
+  /**
+   * Also treat the bot's name appearing in the message text as a mention.
+   * Off by default: WhatsApp's own @-mention and reply are the natural way to
+   * address someone, and a plain-text trigger fires on any message that happens
+   * to contain the word.
+   */
+  textMentionTrigger?: boolean
   adminNumbers?: string[]
   systemPrompt?: string
   geminiApiKey?: string
@@ -37,6 +44,11 @@ export interface RuntimeConfigSchema {
   ragCrossChat?: boolean
   /** Override the embedding model; blank uses the provider default. */
   embeddingModel?: string
+  // Standing notes per chat — the bot's MEMORY.md
+  /** Keep and apply a rolling set of notes about each chat. */
+  groupMemoryEnabled?: boolean
+  /** Messages between automatic rewrites of a chat's notes. */
+  groupMemoryRefreshEvery?: number
   // Personality modes
   /** Applies to any chat without its own override. */
   defaultPersona?: "assistant" | "companion"
@@ -87,6 +99,7 @@ export class RuntimeConfigService {
       rateLimitMaxRequests: config.RATE_LIMIT_MAX_REQUESTS,
       rateLimitWindowMs: config.RATE_LIMIT_WINDOW_MS,
       botName: config.BOT_NAME,
+      textMentionTrigger: false,
       adminNumbers: config.ADMIN_NUMBERS,
       systemPrompt: config.SYSTEM_PROMPT,
       geminiApiKey: config.GEMINI_API_KEY,
@@ -104,6 +117,8 @@ export class RuntimeConfigService {
       ragMinScore: 0.3,
       ragCrossChat: false,
       embeddingModel: "",
+      groupMemoryEnabled: true,
+      groupMemoryRefreshEvery: 40,
       defaultPersona: "assistant",
       // Left blank so persona.service can fall back to its built-in defaults;
       // a value here means the operator has customised the prompt.
