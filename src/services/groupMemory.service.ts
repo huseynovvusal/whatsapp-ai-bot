@@ -136,7 +136,9 @@ ${conversation}
 
 === UPDATED NOTES ===`
 
-      const updated = await llmService.ask(prompt)
+      // The notes are asked for in under 250 words and truncated at 2,000 chars
+      // anyway, so anything beyond this ceiling would be paid for and discarded.
+      const updated = await llmService.ask(prompt, { maxTokens: 600 })
       const cleaned = this.clean(updated)
       if (!cleaned) {
         logger.debug(`Notes refresh for ${chatId} produced nothing usable`)

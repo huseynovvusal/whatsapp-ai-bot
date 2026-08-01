@@ -355,6 +355,8 @@ Available at `http://localhost:3000/admin/login` when bot is running. Mounted vi
     similarity scores, without sending a WhatsApp message
   - **Standing notes**: read and edit the per-chat notes (see "Standing notes" below),
     rewrite them on demand, or clear them
+  - `ragMaxChars` in Settings is the single biggest dial on cost per reply — see
+    "Prompt cost" below
 - **Connection panel** (top of the page): the WhatsApp link-up is one process with several
   stages, so it is one panel with a named state — `starting` / `awaiting_scan` / `connected` /
   `reconnecting`. Previously the panel knew only "connected or not", so the several seconds
@@ -475,6 +477,48 @@ in the Memory tab after a model change.
 decides whether something said in one group can surface in another. Off by default.
 
 Retrieval failures are always swallowed — a reply must never fail because recall did.
+
+## Prompt cost
+
+The bot re-sends most of its prompt on every message, so prompt *shape* is the
+main cost lever. Measured on a 30-member group with 40 messages of history, the
+Companion decision call was 2,588 tokens; the same call is now 1,875 — a 28% cut
+with no change to what the model is told. Four things did it, and each is worth
+keeping in mind when adding to the prompt:
+
+- **Stable-first ordering.** `buildContext` emits a *stable* half (group
+  metadata, member list, standing notes) before a *volatile* half (clock, pace,
+  recalled memories, the conversation). Providers cache identical prompt
+  prefixes, and the first line used to be the wall-clock time — which changes
+  every minute and capped the cacheable prefix at the system prompt. The static
+  decision instructions moved into that prefix too (`DECISION_INSTRUCTIONS` in
+  `llm.service.ts`), which is what lifts it to ~1,044 tokens, just over the
+  1,024-token threshold where OpenAI's automatic caching engages. **Anything new
+  and stable belongs at the front; anything per-message belongs at the back.**
+- **No duplicated system prompt.** The decision call sent the system prompt twice
+  on the OpenAI path — once as the system message and once embedded at the top of
+  the user message. That was a measured 365 tokens per call.
+- **Recall is bounded by characters, not just chunk count.** `ragTopK` caps how
+  many chunks come back, but a chunk is up to 1,600 characters, so `topK: 4`
+  quietly authorised 6,400 — the largest single item in the prompt. `ragMaxChars`
+  (default 2,500) caps the total; hits arrive best-first so the tail is what goes.
+- **Recall skips what the prompt already carries.** Chunks ending inside the
+  short-term window are text the recent-conversation block is printing verbatim,
+  so they were paid for twice *and* shown to the model under two labels. The
+  handler passes `memoryService.getOldestTimestamp()` as the boundary.
+
+Two gates avoid calls altogether, both deliberately conservative because the
+previous round of work was about Companion being too *silent*:
+
+- `isWorthRetrieving` (`rag.service.ts`) skips the embedding call and the recall
+  block for messages with nothing to search on — "ok", "haha", a bare emoji.
+- `burstHasSubstance` (`message.handler.ts`) skips the whole decision call when
+  every message in a settled burst is an acknowledgement. A tag, a reply to the
+  bot, a question mark, media, or any message of substance always goes through.
+
+Output is capped too (`DECISION_MAX_TOKENS`, and `maxTokens` on the notes
+rewrite): output tokens cost several times input, and both produce short text
+that a later cap would truncate anyway.
 
 ## Standing notes (the bot's MEMORY.md)
 

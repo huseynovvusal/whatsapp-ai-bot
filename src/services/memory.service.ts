@@ -129,6 +129,20 @@ export class MemoryService {
   }
 
   /**
+   * When the oldest message still in short-term memory was sent, or null when
+   * the chat has none.
+   *
+   * This is the boundary between "already in the prompt verbatim" and "would
+   * have to be recalled". Retrieval uses it to avoid paying for text the prompt
+   * is carrying anyway — see `ragService.retrieve`.
+   */
+  public getOldestTimestamp(chatId: string): number | undefined {
+    this.pruneOldMessages()
+    const messages = this.conversations.get(chatId)
+    return messages && messages.length ? messages[0].timestamp : undefined
+  }
+
+  /**
    * Get list of participants from messages in this chat (for context)
    */
   public getParticipants(chatId: string): Array<{ name: string; phone: string }> {

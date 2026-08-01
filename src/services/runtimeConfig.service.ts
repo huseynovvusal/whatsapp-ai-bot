@@ -42,6 +42,13 @@ export interface RuntimeConfigSchema {
   ragMinScore?: number
   /** Allow recall across different chats. Off by default for privacy. */
   ragCrossChat?: boolean
+  /**
+   * Ceiling on the total characters of recalled conversation put into a prompt.
+   * `ragTopK` alone bounds the chunk *count*, and a chunk can be 1,600
+   * characters, so without this the recall block was the biggest thing in the
+   * prompt. 0 = no cap.
+   */
+  ragMaxChars?: number
   /** Override the embedding model; blank uses the provider default. */
   embeddingModel?: string
   // Standing notes per chat — the bot's MEMORY.md
@@ -116,6 +123,7 @@ export class RuntimeConfigService {
       ragTopK: 4,
       ragMinScore: 0.3,
       ragCrossChat: false,
+      ragMaxChars: 2500,
       embeddingModel: "",
       groupMemoryEnabled: true,
       groupMemoryRefreshEvery: 40,

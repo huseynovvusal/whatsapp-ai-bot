@@ -328,6 +328,8 @@ router.post("/save", (req: Request, res: Response) => {
     if ("ragCrossChat" in body) runtimeConfig.set("ragCrossChat", Boolean(body.ragCrossChat))
     if ("ragTopK" in body)
       runtimeConfig.set("ragTopK", Math.max(1, Math.min(20, nonNegative(body.ragTopK, 4))))
+    if ("ragMaxChars" in body)
+      runtimeConfig.set("ragMaxChars", Math.max(0, Math.min(20000, nonNegative(body.ragMaxChars, 2500))))
     if ("ragMinScore" in body)
       runtimeConfig.set("ragMinScore", Math.max(0, Math.min(1, nonNegative(body.ragMinScore, 0.3))))
     if ("embeddingModel" in body)

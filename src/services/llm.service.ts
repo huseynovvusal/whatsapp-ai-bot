@@ -10,6 +10,40 @@ import { sanitiseEmoji } from "@/utils/emoji.utils"
 const logger = createLogger(config.LOG_LEVEL, "LLMService")
 
 /**
+ * Output ceiling for the Companion decision call. It returns a JSON object
+ * wrapping a chat message, so a few hundred tokens is generous.
+ */
+const DECISION_MAX_TOKENS = 300
+
+/**
+ * The decision task, verbatim on every call.
+ *
+ * It lives up here, and is sent as part of the *prefix* rather than alongside the
+ * messages, for one reason: providers cache identical prompt prefixes, and a
+ * ~310-token constant is 310 tokens that never need re-reading. Putting the
+ * static instructions in front of the volatile conversation is what lifts the
+ * cacheable prefix over the threshold where caching engages at all.
+ */
+const DECISION_INSTRUCTIONS = `You are following this group chat. Decide how to respond to the message (or messages) below, the way someone in the group would.
+
+SPEAK UP when any of these is true:
+- Someone asked a question you can actually answer, even if they did not ask you.
+- Something was said that you have a genuine reaction or opinion about.
+- You are already part of this thread — you said something recently and they are still on it.
+- The chat has been quiet and someone opened a topic worth picking up.
+
+STAY QUIET when:
+- Two other people are mid-exchange and a third voice would interrupt.
+- You would only be agreeing, acknowledging, or restating what was said. React with an emoji instead.
+- You have nothing to add beyond politeness.
+
+If several messages are shown, they are numbered. Set "replyTo" to the number of the one you are actually answering — that becomes a WhatsApp reply to that exact message. Leave it out when you are responding to the conversation as a whole.
+
+Return a single-line JSON object and nothing else:
+{ "shouldReply": true|false, "reply": "<short reply, only if shouldReply is true>", "reaction": "<a single emoji, or empty string for none>", "replyTo": <message number, or omit> }`
+
+
+/**
  * Record a single LLM API call (and its token usage, when the provider reports it)
  * against today's analytics row. Failures here must never break a reply.
  */
@@ -246,29 +280,18 @@ Assistant:`
       // only "staying quiet is usually right", and the model took that to mean
       // "stay quiet unless tagged" — the bot went mute in real group chats.
       // Naming the cases where a person *would* speak restores the balance.
-      const prompt = `${systemPrompt}
+      // Split in two: everything the provider can cache as a stable prefix, and
+      // the task itself. On the OpenAI path the prefix goes in the system message
+      // and only the task in the user message — the system prompt used to be sent
+      // *twice* (once as the system message, once embedded at the top of this
+      // string), which was a measured 365 wasted tokens on every decision call.
+      const preamble = `${systemPrompt}
 
-${context}
+${DECISION_INSTRUCTIONS}
 
-You are following this group chat. Decide how to respond to the message (or messages) below, the way someone in the group would.
+${context}`
 
-SPEAK UP when any of these is true:
-- Someone asked a question you can actually answer, even if they did not ask you.
-- Something was said that you have a genuine reaction or opinion about.
-- You are already part of this thread — you said something recently and they are still on it.
-- The chat has been quiet and someone opened a topic worth picking up.
-
-STAY QUIET when:
-- Two other people are mid-exchange and a third voice would interrupt.
-- You would only be agreeing, acknowledging, or restating what was said. React with an emoji instead.
-- You have nothing to add beyond politeness.
-
-If several messages are shown, they are numbered. Set "replyTo" to the number of the one you are actually answering — that becomes a WhatsApp reply to that exact message. Leave it out when you are responding to the conversation as a whole.
-
-Return a single-line JSON object and nothing else:
-{ "shouldReply": true|false, "reply": "<short reply, only if shouldReply is true>", "reaction": "<a single emoji, or empty string for none>", "replyTo": <message number, or omit> }
-
-${userText}
+      const task = `${userText}
 `
 
       let text = ""
@@ -276,16 +299,24 @@ ${userText}
         const res = await this.openai.chat.completions.create({
           model: this.openaiModel,
           messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: prompt },
+            { role: "system", content: preamble },
+            { role: "user", content: task },
           ],
           temperature: 0.3,
+          // The reply this call produces is a chat message, not an essay, and
+          // output tokens cost several times what input tokens do. Unbounded, a
+          // model that decides to ramble is billed for all of it before the
+          // length cap throws most of it away.
+          max_tokens: DECISION_MAX_TOKENS,
         })
         text = (res.choices?.[0]?.message?.content || "").trim()
         recordUsage(res.usage?.total_tokens || 0)
       } else {
         if (!this.geminiModel) throw new Error("Gemini model not initialized")
-        const result = await this.geminiModel.generateContent(prompt)
+        const result = await this.geminiModel.generateContent({
+          contents: [{ role: "user", parts: [{ text: `${preamble}\n\n${task}` }] }],
+          generationConfig: { maxOutputTokens: DECISION_MAX_TOKENS, temperature: 0.3 },
+        })
         const response = await result.response
         text = response.text().trim()
         recordUsage(response.usageMetadata?.totalTokenCount || 0)
@@ -327,18 +358,26 @@ ${userText}
   /**
    * Simple ask without context (for quick queries)
    */
-  public async ask(userText: string): Promise<string> {
+  public async ask(userText: string, options: { maxTokens?: number } = {}): Promise<string> {
     try {
       if (this.provider === "openai" && this.openai && this.openaiModel) {
         const res = await this.openai.chat.completions.create({
           model: this.openaiModel,
           messages: [{ role: "user", content: userText }],
+          ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
         })
         recordUsage(res.usage?.total_tokens || 0)
         return res.choices?.[0]?.message?.content || ""
       }
       if (!this.geminiModel) throw new Error("Gemini model not initialized")
-      const result = await this.geminiModel.generateContent(userText)
+      const result = await this.geminiModel.generateContent(
+        options.maxTokens
+          ? {
+              contents: [{ role: "user", parts: [{ text: userText }] }],
+              generationConfig: { maxOutputTokens: options.maxTokens },
+            }
+          : userText
+      )
       const response = await result.response
       recordUsage(response.usageMetadata?.totalTokenCount || 0)
       return response.text()

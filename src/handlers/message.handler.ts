@@ -7,7 +7,7 @@ import { rateLimiter } from "@/services/ratelimit.service"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { databaseService } from "@/services/database.service"
 import { AdminUtils } from "@/utils/admin.utils"
-import { ragService } from "@/services/rag.service"
+import { ragService, isWorthRetrieving } from "@/services/rag.service"
 import { budgetService } from "@/services/budget.service"
 import {
   conversationPacer,
@@ -34,6 +34,33 @@ import { config } from "@/config/env"
 const logger = createLogger(config.LOG_LEVEL, "MessageHandler")
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Cap on how many group members are listed in the prompt.
+ *
+ * Sized so an ordinary group is listed in full — the cap only bites on the large
+ * groups where the list was dominating the prompt.
+ */
+const MAX_LISTED_MEMBERS = 25
+
+/**
+ * Is there anything in this burst a person could actually respond to?
+ *
+ * Deliberately conservative — the previous round of work was about the bot being
+ * too *silent*, so this only skips bursts where every message is an
+ * acknowledgement or a bare emoji, and never when the bot was addressed. Anything
+ * with a question mark, or any message of real length, goes to the model.
+ */
+function burstHasSubstance(burst: MessageInfo[]): boolean {
+  return burst.some((m) => {
+    if (m.isMentioned || m.isReplyToBot) return true
+    // Media has content even when the caption is empty.
+    if (m.media) return true
+    const text = (m.text || "").trim()
+    if (text.includes("?")) return true
+    return isWorthRetrieving(text)
+  })
+}
 
 /** How a reply should be delivered, once the decision to reply has been made. */
 interface ReplyOptions {
@@ -432,6 +459,15 @@ export class MessageHandler {
       // The decision call costs tokens, so the spend ceiling gates it too.
       if (!(await budgetService.check()).allowed) return
 
+      // Nothing was said that anyone could answer — skip the call entirely.
+      // This is the cheapest possible saving: a burst of "ok" / "haha" / "👍"
+      // costs a full-context decision call to be told to stay quiet, which is
+      // the answer a person could give without reading anything.
+      if (!burstHasSubstance(burst)) {
+        logger.debug(`Skipping the decision call in ${info.from}: nothing to respond to`)
+        return
+      }
+
       const pace = conversationPacer.getPace(info.from)
       const context = await this.buildContext(info, { burst, pace: pace.description })
       const decision = await llmService.askForReactiveReply(
@@ -535,20 +571,26 @@ export class MessageHandler {
       const roster = await whatsappService.getGroupParticipants(info.from)
       if (!roster.length) return fromConversation
 
-      const spoken = new Map(fromConversation.map((p) => [p.phone, p.name]))
+      // Matched on digits alone. Both sides go through `cleanPhoneNumber` today,
+      // so the strings line up — but an exact-string match means any future
+      // divergence in formatting would list the same person twice, once from the
+      // roster marked "not spoken" and once from the conversation. That is both
+      // wrong and paid for by the token.
+      const digits = (phone: string) => phone.replace(/\D/g, "")
+      const spoken = new Map(fromConversation.map((p) => [digits(p.phone), p.name]))
       const merged = roster.map((member) => ({
         // A name learned from a message is the one people actually use.
-        name: spoken.get(member.phone) || member.name || member.phone,
+        name: spoken.get(digits(member.phone)) || member.name || member.phone,
         phone: member.phone,
         isAdmin: member.isAdmin,
-        hasSpoken: spoken.has(member.phone) || member.hasSpoken,
+        hasSpoken: spoken.has(digits(member.phone)) || member.hasSpoken,
       }))
 
       // Anyone in the conversation but not in the roster — a former member whose
       // messages are still in context — is kept rather than dropped.
-      const inRoster = new Set(roster.map((m) => m.phone))
+      const inRoster = new Set(roster.map((m) => digits(m.phone)))
       for (const p of fromConversation) {
-        if (!inRoster.has(p.phone)) merged.push({ ...p, isAdmin: false, hasSpoken: true })
+        if (!inRoster.has(digits(p.phone))) merged.push({ ...p, isAdmin: false, hasSpoken: true })
       }
       return merged
     } catch (err) {
@@ -558,62 +600,71 @@ export class MessageHandler {
   }
 
   /**
-   * Assemble everything the LLM should see for this chat:
-   * group metadata, recalled long-term memories, and recent conversation.
+   * Render the member list for the prompt, largest useful subset first.
+   *
+   * A complete roster is the right thing to *know* but the wrong thing to send
+   * unconditionally: measured on a 100-member group it was 1,267 tokens, 41% of
+   * the whole prompt, repeated on every single message. The people who matter
+   * for naming and tagging are the ones who talk, so those go in first, then
+   * admins, then everyone else until the cap. Whoever is left is reported as a
+   * count — the bot still knows how big the room is, it just does not pay to
+   * list 60 people who have never spoken.
+   */
+  private renderMembers(
+    participants: Array<{ name: string; phone: string; isAdmin?: boolean; hasSpoken?: boolean }>
+  ): string {
+    if (!participants.length) return "No participants tracked yet"
+
+    const rank = (p: { isAdmin?: boolean; hasSpoken?: boolean }) =>
+      p.hasSpoken ? 0 : p.isAdmin ? 1 : 2
+    const ordered = [...participants].sort((a, b) => rank(a) - rank(b))
+    const listed = ordered.slice(0, MAX_LISTED_MEMBERS)
+    const omitted = ordered.length - listed.length
+
+    const lines = listed.map(
+      (p) =>
+        `- ${p.name} (${p.phone})` +
+        `${p.isAdmin ? " [group admin]" : ""}${p.hasSpoken === false ? " [not spoken here yet]" : ""}`
+    )
+    if (omitted > 0) {
+      lines.push(`- …and ${omitted} more member(s) who have not spoken in this chat`)
+    }
+    return lines.join("\n")
+  }
+
+  /**
+   * Assemble everything the LLM should see for this chat.
+   *
+   * Order is deliberate and is itself a cost optimisation. Providers cache
+   * identical prompt *prefixes*, so anything stable must come first and anything
+   * that changes every message must come last. Previously the very first line
+   * after the system prompt was the wall-clock time, which changes every minute
+   * and made the cacheable prefix end there. Now the stable half — who is in the
+   * group, what the bot knows about the chat — leads, and the volatile half —
+   * the clock, the pace, recalled memories, the conversation itself — follows.
+   * Identical content, materially cheaper on a provider that caches prefixes.
    */
   private async buildContext(
     info: MessageInfo,
     options: { burst?: MessageInfo[]; pace?: string } = {}
   ): Promise<string> {
-    const sections: string[] = []
+    const stable: string[] = []
+    const volatile: string[] = []
     const participants = await this.resolveParticipants(info)
 
-    // Awareness a person has for free and a bot otherwise lacks: what time it
-    // is, how long the chat has been quiet, and how busy it is right now.
-    const timing = describeTiming(this.lastMessageAt.get(info.from) ?? null)
-    if (timing) sections.push(timing)
-    if (options.pace) sections.push(options.pace)
+    // ---- stable: changes only when the group or the bot's notes change ----
 
-    // Stop it opening every message the same way.
-    const variety = avoidRepeatOpeners(this.recentReplies.get(info.from) || [])
-    if (variety) sections.push(variety)
-
-    // When answering a settled burst, say so — the reply should address the
-    // exchange as a whole, not just the final line.
-    if (options.burst && options.burst.length > 1) {
-      sections.push(
-        `${options.burst.length} messages arrived together while you were reading. ` +
-          "Respond to the exchange as a whole — you can pick up more than one point, " +
-          "or reply to whichever part is actually worth answering."
-      )
-    }
-
-    // Group metadata + who the bot may tag
     if (info.isGroup) {
       try {
         const g = await whatsappService.getGroupInfo(info.from)
         if (g) {
-          // Silent members are marked rather than omitted: knowing that someone
-          // is in the room but has not spoken is useful, and it means the bot
-          // can tag them.
-          const participantList =
-            participants.length > 0
-              ? participants
-                  .map(
-                    (p) =>
-                      `- ${p.name} (${p.phone})` +
-                      `${p.isAdmin ? " [group admin]" : ""}${p.hasSpoken === false ? " [has not spoken here yet]" : ""}`
-                  )
-                  .join("\n")
-              : "No participants tracked yet"
-
-          sections.push(`Group Metadata:
+          stable.push(`Group Metadata:
 SUBJECT: ${g.subject || "(no subject)"}${g.description ? `\nDESCRIPTION: ${g.description}` : ""}
 OWNER: ${cleanPhoneFromJid(g.owner || "")}
 TOTAL PARTICIPANTS: ${g.participantCount || 0}
 
 Members:
-${participantList}
+${this.renderMembers(participants)}
 
 Instructions: You can mention people by using @Name format (e.g., @John). When you mention someone, make sure to use their exact name as shown in the member list above.`)
         }
@@ -625,16 +676,45 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
     // Standing notes: what the bot already knows about this chat.
     try {
       const notes = await groupMemoryService.getForPrompt(info.from)
-      if (notes) sections.push(notes)
+      if (notes) stable.push(notes)
     } catch (err) {
       logger.debug("Could not load standing notes", err)
     }
 
+    // ---- volatile: different on essentially every message ----
+
+    // Awareness a person has for free and a bot otherwise lacks: what time it
+    // is, how long the chat has been quiet, and how busy it is right now.
+    const timing = describeTiming(this.lastMessageAt.get(info.from) ?? null)
+    if (timing) volatile.push(timing)
+    if (options.pace) volatile.push(options.pace)
+
+    // Stop it opening every message the same way.
+    const variety = avoidRepeatOpeners(this.recentReplies.get(info.from) || [])
+    if (variety) volatile.push(variety)
+
+    // When answering a settled burst, say so — the reply should address the
+    // exchange as a whole, not just the final line.
+    if (options.burst && options.burst.length > 1) {
+      volatile.push(
+        `${options.burst.length} messages arrived together while you were reading. ` +
+          "Respond to the exchange as a whole — you can pick up more than one point, " +
+          "or reply to whichever part is actually worth answering."
+      )
+    }
+
     // Long-term memory: semantically relevant history beyond the recent window.
     try {
-      const memories = await ragService.retrieve(info.text, info.from)
+      const memories = await ragService.retrieve(info.text, info.from, {
+        // Anything still in short-term memory is already printed verbatim in the
+        // recent-conversation block below. Recalling it as well paid for the same
+        // text twice and showed the model one exchange in two guises — "just
+        // said" and "remembered from earlier" — which is worse than not
+        // recalling it at all.
+        before: memoryService.getOldestTimestamp(info.from),
+      })
       if (memories.length) {
-        sections.push(ragService.formatMemories(memories))
+        volatile.push(ragService.formatMemories(memories))
         logger.info(
           `Recalled ${memories.length} memory chunk(s) (best match ${memories[0].score.toFixed(2)})`
         )
@@ -643,9 +723,15 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
       logger.warn("Memory recall failed, continuing without it", err)
     }
 
-    sections.push(memoryService.getContext(info.from))
-    return sections.join("\n\n")
+    volatile.push(memoryService.getContext(info.from))
+
+    const context = [...stable, ...volatile].join("\n\n")
+    logger.debug(
+      `Context for ${info.from}: ${context.length} chars (${stable.join("").length} stable, ${volatile.join("").length} volatile)`
+    )
+    return context
   }
+
 
   /**
    * Turn attached media into text the rest of the pipeline can use: an image

@@ -32,6 +32,38 @@ const CHUNK_MAX_MESSAGES = 12
 /** ...or this many characters, whichever comes first. */
 const CHUNK_MAX_CHARS = 1600
 
+/**
+ * Messages that cannot possibly be a useful search query.
+ *
+ * Retrieval is not free: it costs an embedding call and, on a hit, up to a
+ * thousand tokens of recalled conversation in the prompt. "ok", "haha", "👍" and
+ * the like carry no terms to search on, so the search is guaranteed to return
+ * whatever is nearest by accident. Skipping them saves the call *and* keeps
+ * irrelevant memories out of the prompt.
+ */
+const ACKNOWLEDGEMENTS = new Set([
+  "ok", "okay", "k", "kk", "yes", "no", "yeah", "yep", "yup", "nah", "sure",
+  "thanks", "thx", "ty", "haha", "hahaha", "lol", "lmao", "same", "true",
+  "nice", "cool", "great", "done", "agreed", "exactly", "fine", "np",
+])
+
+export function isWorthRetrieving(query: string): boolean {
+  const trimmed = (query || "").trim()
+  if (trimmed.length < 3) return false
+
+  // Strip emoji and punctuation; what is left is what could be searched on.
+  const words = trimmed
+    .toLowerCase()
+    .replace(/\p{Extended_Pictographic}/gu, " ")
+    .match(/[\p{L}\p{N}']+/gu)
+  if (!words || !words.length) return false
+
+  // A single acknowledgement, with or without an emoji, is not a question.
+  if (words.length <= 2 && words.every((w) => ACKNOWLEDGEMENTS.has(w))) return false
+
+  return true
+}
+
 export interface RetrievedMemory {
   text: string
   chatId: string
@@ -51,6 +83,12 @@ export class RAGService {
 
   public isIndexing(): boolean {
     return this.indexing
+  }
+
+  /** Ceiling on the characters of recalled conversation put in a prompt. 0 = no cap. */
+  private getCharBudget(): number {
+    const configured = Number(runtimeConfig.get("ragMaxChars"))
+    return Number.isFinite(configured) && configured >= 0 ? configured : 2500
   }
 
   /** Group a chat's messages into coherent chunks of conversation. */
@@ -211,11 +249,11 @@ export class RAGService {
   public async retrieve(
     query: string,
     chatId: string,
-    options: { limit?: number; minScore?: number } = {}
+    options: { limit?: number; minScore?: number; before?: number } = {}
   ): Promise<RetrievedMemory[]> {
     if (!this.isEnabled()) return []
     if (!embeddingService.isConfigured()) return []
-    if (!query || query.trim().length < 3) return []
+    if (!isWorthRetrieving(query)) return []
 
     try {
       const crossChat = runtimeConfig.get("ragCrossChat") === true
@@ -226,14 +264,46 @@ export class RAGService {
           : Number(runtimeConfig.get("ragMinScore")) || 0.3
 
       const queryVector = await embeddingService.embed(query)
+      // Over-fetch a little, because chunks overlapping the short-term window are
+      // dropped below and would otherwise eat into the requested count.
       const hits = await databaseService.searchKnowledgeChunks(queryVector, {
         chatId: crossChat ? undefined : chatId,
         model: embeddingService.getModelId(),
-        limit,
+        limit: options.before ? limit * 2 : limit,
         minScore,
       })
 
-      return hits.map((hit) => ({
+      // A chunk that ends inside the recent window is text the prompt is already
+      // carrying verbatim. Recalling it is paid-for duplication, and it makes the
+      // same exchange appear twice under two different labels.
+      const cutoff = options.before
+      const fresh = cutoff ? hits.filter((hit) => hit.endTimestamp < cutoff) : hits
+      if (cutoff && fresh.length < hits.length) {
+        logger.debug(
+          `Dropped ${hits.length - fresh.length} recalled chunk(s) already in the recent window`
+        )
+      }
+
+      // Cap the *total* recalled text, not just the number of chunks. A chunk is
+      // up to 1,600 characters, so `ragTopK: 4` quietly authorised 6,400
+      // characters — measured at ~1,600 tokens, the largest single item in the
+      // prompt. Hits arrive best-first, so this keeps the strongest matches and
+      // drops the tail, which is where the weak ones are anyway.
+      const budget = this.getCharBudget()
+      const selected: typeof fresh = []
+      let used = 0
+      for (const hit of fresh.slice(0, limit)) {
+        if (budget > 0 && used + hit.text.length > budget && selected.length) break
+        selected.push(hit)
+        used += hit.text.length
+      }
+      if (selected.length < Math.min(fresh.length, limit)) {
+        logger.debug(
+          `Recall trimmed to ${selected.length} chunk(s) (${used} chars) by the ${budget}-char budget`
+        )
+      }
+
+      return selected.map((hit) => ({
         text: hit.text,
         chatId: hit.chatId,
         chatName: hit.chatName,
