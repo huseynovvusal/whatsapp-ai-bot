@@ -22,10 +22,15 @@ export interface RuntimeConfigSchema {
   systemPrompt?: string
   geminiApiKey?: string
   // LLM provider and OpenAI settings
-  llmProvider?: "openai" | "gemini"
+  llmProvider?: "openai" | "gemini" | "azure"
   openaiApiKey?: string
   openaiModel?: string
   openaiBaseUrl?: string
+  azureOpenaiApiKey?: string
+  azureOpenaiEndpoint?: string
+  azureOpenaiDeployment?: string
+  azureOpenaiEmbeddingDeployment?: string
+  azureOpenaiApiVersion?: string
   respondToGroupMessages?: boolean
   contextualGroupResponses?: boolean
   accessControlMode?: "disabled" | "whitelist" | "blacklist"
@@ -114,6 +119,11 @@ export class RuntimeConfigService {
       openaiApiKey: process.env.OPENAI_API_KEY,
       openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
       openaiBaseUrl: process.env.OPENAI_BASE_URL || "",
+      azureOpenaiApiKey: config.AZURE_OPENAI_API_KEY,
+      azureOpenaiEndpoint: config.AZURE_OPENAI_ENDPOINT,
+      azureOpenaiDeployment: config.AZURE_OPENAI_DEPLOYMENT,
+      azureOpenaiEmbeddingDeployment: config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+      azureOpenaiApiVersion: config.AZURE_OPENAI_API_VERSION,
       respondToGroupMessages: false,
       contextualGroupResponses: false,
       accessControlMode: config.ACCESS_CONTROL_MODE,

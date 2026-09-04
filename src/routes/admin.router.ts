@@ -311,6 +311,11 @@ router.post("/save", (req: Request, res: Response) => {
     if ("openaiApiKey" in body) runtimeConfig.set("openaiApiKey", String(body.openaiApiKey))
     if ("openaiModel" in body) runtimeConfig.set("openaiModel", String(body.openaiModel))
     if ("openaiBaseUrl" in body) runtimeConfig.set("openaiBaseUrl", String(body.openaiBaseUrl))
+    if ("azureOpenaiApiKey" in body) runtimeConfig.set("azureOpenaiApiKey", String(body.azureOpenaiApiKey))
+    if ("azureOpenaiEndpoint" in body) runtimeConfig.set("azureOpenaiEndpoint", String(body.azureOpenaiEndpoint))
+    if ("azureOpenaiDeployment" in body) runtimeConfig.set("azureOpenaiDeployment", String(body.azureOpenaiDeployment))
+    if ("azureOpenaiEmbeddingDeployment" in body) runtimeConfig.set("azureOpenaiEmbeddingDeployment", String(body.azureOpenaiEmbeddingDeployment))
+    if ("azureOpenaiApiVersion" in body) runtimeConfig.set("azureOpenaiApiVersion", String(body.azureOpenaiApiVersion))
     if ("respondToGroupMessages" in body)
       runtimeConfig.set("respondToGroupMessages", Boolean(body.respondToGroupMessages))
     if ("contextualGroupResponses" in body)
@@ -353,7 +358,12 @@ router.post("/save", (req: Request, res: Response) => {
       "llmProvider" in body ||
       "openaiModel" in body ||
       "openaiBaseUrl" in body ||
-      "embeddingModel" in body
+      "embeddingModel" in body ||
+      "azureOpenaiApiKey" in body ||
+      "azureOpenaiEndpoint" in body ||
+      "azureOpenaiDeployment" in body ||
+      "azureOpenaiEmbeddingDeployment" in body ||
+      "azureOpenaiApiVersion" in body
     ) {
       try {
         llmService.reloadCredentials()

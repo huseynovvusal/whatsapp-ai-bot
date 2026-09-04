@@ -1,8 +1,10 @@
-import { GoogleGenerativeAI } from "@google/generative-ai"
-import OpenAI from "openai"
 import { config } from "@/config/env"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
 import { createLogger } from "@/lib/logger"
+import { EmbeddingProvider } from "@/services/providers/interfaces"
+import { OpenAIEmbeddingProvider } from "@/services/providers/openai"
+import { GeminiEmbeddingProvider } from "@/services/providers/gemini"
+import { AzureOpenAIEmbeddingProvider } from "@/services/providers/azure-openai"
 
 const logger = createLogger(config.LOG_LEVEL, "EmbeddingService")
 
@@ -19,10 +21,8 @@ const DEFAULT_MODELS = {
  * plain dot product instead of a full cosine calculation on every comparison.
  */
 export class EmbeddingService {
-  private provider: "openai" | "gemini" = "gemini"
-  private model: string = DEFAULT_MODELS.gemini
-  private genAI?: GoogleGenerativeAI
-  private openai?: OpenAI
+  private provider: "openai" | "gemini" | "azure" = "gemini"
+  private adapter?: EmbeddingProvider
   private configured = false
 
   constructor() {
@@ -33,8 +33,7 @@ export class EmbeddingService {
   public reload(): void {
     this.configured = false
     try {
-      const provider = (runtimeConfig.get("llmProvider") as "openai" | "gemini") ||
-        config.LLM_PROVIDER || "gemini"
+      const provider = (runtimeConfig.get("llmProvider") as "openai" | "gemini" | "azure") || config.LLM_PROVIDER || "gemini"
       this.provider = provider
 
       const configuredModel = runtimeConfig.get("embeddingModel") as string | undefined
@@ -43,19 +42,25 @@ export class EmbeddingService {
         const apiKey = (runtimeConfig.get("openaiApiKey") as string) || process.env.OPENAI_API_KEY
         const baseURL = (runtimeConfig.get("openaiBaseUrl") as string) || process.env.OPENAI_BASE_URL
         if (!apiKey) return
-        this.openai = new OpenAI({ apiKey, baseURL: baseURL || undefined })
-        this.genAI = undefined
-        this.model = configuredModel || DEFAULT_MODELS.openai
+        const model = configuredModel || DEFAULT_MODELS.openai
+        this.adapter = new OpenAIEmbeddingProvider(apiKey, baseURL || undefined, model)
+      } else if (provider === "azure") {
+        const apiKey = (runtimeConfig.get("azureOpenaiApiKey") as string) || config.AZURE_OPENAI_API_KEY
+        const endpoint = (runtimeConfig.get("azureOpenaiEndpoint") as string) || config.AZURE_OPENAI_ENDPOINT
+        const deployment = (runtimeConfig.get("azureOpenaiEmbeddingDeployment") as string) || config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT || (runtimeConfig.get("azureOpenaiDeployment") as string) || config.AZURE_OPENAI_DEPLOYMENT
+        const apiVersion = (runtimeConfig.get("azureOpenaiApiVersion") as string) || config.AZURE_OPENAI_API_VERSION
+
+        if (!apiKey || !endpoint || !deployment) return
+        this.adapter = new AzureOpenAIEmbeddingProvider(apiKey, endpoint, deployment, apiVersion)
       } else {
         const apiKey = (runtimeConfig.get("geminiApiKey") as string) || config.GEMINI_API_KEY
         if (!apiKey) return
-        this.genAI = new GoogleGenerativeAI(apiKey)
-        this.openai = undefined
-        this.model = configuredModel || DEFAULT_MODELS.gemini
+        const model = configuredModel || DEFAULT_MODELS.gemini
+        this.adapter = new GeminiEmbeddingProvider(apiKey, model)
       }
 
       this.configured = true
-      logger.info(`Embeddings ready: ${this.provider} / ${this.model}`)
+      logger.info(`Embeddings ready: ${this.provider} / ${this.adapter?.getModelId()}`)
     } catch (err) {
       logger.warn("Embedding service could not be initialised", err)
     }
@@ -66,7 +71,7 @@ export class EmbeddingService {
   }
 
   public getModelId(): string {
-    return `${this.provider}:${this.model}`
+    return this.adapter?.getModelId() || `${this.provider}:unknown`
   }
 
   /**
@@ -76,32 +81,8 @@ export class EmbeddingService {
    * concurrency, which keeps indexing quick without opening hundreds of sockets.
    */
   public async embedBatch(texts: string[]): Promise<number[][]> {
-    if (!this.configured) throw new Error("Embedding provider is not configured")
-    if (!texts.length) return []
-
-    if (this.provider === "openai" && this.openai) {
-      const res = await this.openai.embeddings.create({ model: this.model, input: texts })
-      // The API may return items out of order; `index` is authoritative.
-      const out: number[][] = new Array(texts.length)
-      for (const item of res.data) out[item.index] = normalise(item.embedding as number[])
-      return out
-    }
-
-    if (!this.genAI) throw new Error("Gemini embedding client not initialised")
-    const model = this.genAI.getGenerativeModel({ model: this.model })
-    const results: number[][] = new Array(texts.length)
-    const concurrency = 4
-
-    for (let start = 0; start < texts.length; start += concurrency) {
-      const slice = texts.slice(start, start + concurrency)
-      await Promise.all(
-        slice.map(async (text, offset) => {
-          const res = await model.embedContent(text)
-          results[start + offset] = normalise(res.embedding.values as number[])
-        })
-      )
-    }
-    return results
+    if (!this.configured || !this.adapter) throw new Error("Embedding provider is not configured")
+    return this.adapter.embedBatch(texts)
   }
 
   public async embed(text: string): Promise<number[]> {
