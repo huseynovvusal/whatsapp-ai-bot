@@ -1,4 +1,6 @@
 import { runtimeConfig } from "@/services/runtimeConfig.service"
+import { personaService } from "@/services/persona.service"
+import { styleService } from "@/services/style.service"
 import { whatsappService } from "@/services/whatsapp.service"
 import { userProfileService } from "@/services/userProfile.service"
 import { databaseService } from "@/services/database.service"
@@ -25,16 +27,31 @@ export class MemoryService {
   private conversations: Map<string, Message[]> = new Map()
   private systemPrompt: string
 
-  private messageLimit: number
-  private retentionMs: number
-
-  constructor(messageLimit = 25, retentionMs = 60 * 60 * 1000) {
-    // Default: last 10 messages, 1 hour retention
-    this.messageLimit = messageLimit
-    this.retentionMs = retentionMs
+  constructor() {
     // Load system prompt from runtime config if set, otherwise use env value
     this.systemPrompt = (runtimeConfig.get("systemPrompt") as string) || config.SYSTEM_PROMPT
     this.startPruning()
+  }
+
+  /**
+   * Messages kept per chat. Read from runtime config on every use so the admin
+   * UI takes effect immediately. 0 means unlimited.
+   */
+  private getMessageLimit(): number {
+    const configured = runtimeConfig.get("memoryMessageLimit")
+    const value = configured === undefined ? config.MEMORY_MESSAGE_LIMIT : Number(configured)
+    return Number.isFinite(value) && value >= 0 ? value : config.MEMORY_MESSAGE_LIMIT
+  }
+
+  /**
+   * How long a message stays in short-term memory. 0 means it never expires —
+   * long-range recall is then handled by retrieval (see rag.service.ts) rather
+   * than by keeping everything in the prompt.
+   */
+  private getRetentionMs(): number {
+    const configured = runtimeConfig.get("memoryWindowMs")
+    const value = configured === undefined ? config.MEMORY_WINDOW_MS : Number(configured)
+    return Number.isFinite(value) && value >= 0 ? value : config.MEMORY_WINDOW_MS
   }
 
   /**
@@ -58,17 +75,18 @@ export class MemoryService {
     const messages = this.conversations.get(chatId) || []
     messages.push(message)
 
-    // Keep only last `messageLimit` messages in memory
-    if (messages.length > this.messageLimit) {
-      messages.splice(0, messages.length - this.messageLimit)
-      logger.debug(`Pruned old messages for ${chatId} to keep last ${this.messageLimit}`)
+    // Keep only the last `messageLimit` messages in memory (0 = unlimited)
+    const messageLimit = this.getMessageLimit()
+    if (messageLimit > 0 && messages.length > messageLimit) {
+      messages.splice(0, messages.length - messageLimit)
+      logger.debug(`Pruned old messages for ${chatId} to keep last ${messageLimit}`)
     }
 
     this.conversations.set(chatId, messages)
 
     // Save to database
     try {
-      databaseService.saveMessage({
+      await databaseService.saveMessage({
         chatId,
         sender: displaySender,
         senderName: displayName,
@@ -79,7 +97,7 @@ export class MemoryService {
 
       // Update analytics
       const today = new Date().toISOString().split("T")[0]
-      databaseService.updateAnalytics(today, { totalMessages: 1 })
+      await databaseService.updateAnalytics(today, { totalMessages: 1 })
     } catch (err) {
       logger.error("Failed to save message to database", err)
     }
@@ -108,6 +126,20 @@ export class MemoryService {
 
     const contextMessages = messages.map((msg) => `${msg.senderName}: ${msg.text}`).join("\n")
     return `Recent conversation:\n${contextMessages}`
+  }
+
+  /**
+   * When the oldest message still in short-term memory was sent, or null when
+   * the chat has none.
+   *
+   * This is the boundary between "already in the prompt verbatim" and "would
+   * have to be recalled". Retrieval uses it to avoid paying for text the prompt
+   * is carrying anyway — see `ragService.retrieve`.
+   */
+  public getOldestTimestamp(chatId: string): number | undefined {
+    this.pruneOldMessages()
+    const messages = this.conversations.get(chatId)
+    return messages && messages.length ? messages[0].timestamp : undefined
   }
 
   /**
@@ -143,6 +175,10 @@ export class MemoryService {
    * Clear all messages from memory
    */
   public clear(chatId?: string): void {
+    // The style profile is derived from this chat's messages, so it must not
+    // outlive them.
+    styleService.invalidate(chatId)
+
     if (chatId) {
       const old = this.conversations.get(chatId) || []
       this.conversations.delete(chatId)
@@ -157,27 +193,34 @@ export class MemoryService {
   }
 
   /**
-   * Update system prompt
+   * Update the system prompt for the personality mode a chat is using (or for
+   * the global default persona when no chat is given). Persisted immediately, so
+   * the change applies to the very next LLM call.
    */
-  public setSystemPrompt(prompt: string): void {
+  public setSystemPrompt(prompt: string, chatId?: string): void {
     this.systemPrompt = prompt
-    logger.info("System prompt updated")
+    personaService.setPrompt(personaService.getPersonaForChat(chatId), prompt)
   }
 
   /**
-   * Get current system prompt
+   * The system prompt for a chat, resolved through its personality mode.
+   * Read fresh on every call so admin-UI edits take effect without a restart.
    */
-  public getSystemPrompt(): string {
-    return this.systemPrompt
+  public async getSystemPrompt(chatId?: string): Promise<string> {
+    return personaService.getPromptForChat(chatId)
   }
 
   /**
    * Remove messages older than `retentionMs`
    */
   private pruneOldMessages(): void {
+    const retentionMs = this.getRetentionMs()
+    // 0 = messages never expire; retrieval handles long-range recall instead.
+    if (retentionMs <= 0) return
+
     const now = Date.now()
     for (const [chatId, messages] of this.conversations.entries()) {
-      const active = messages.filter((msg) => now - msg.timestamp <= this.retentionMs)
+      const active = messages.filter((msg) => now - msg.timestamp <= retentionMs)
       const prunedCount = messages.length - active.length
       if (prunedCount > 0) logger.debug(`Pruned ${prunedCount} messages for ${chatId}`)
       if (active.length === 0) this.conversations.delete(chatId)
@@ -198,5 +241,6 @@ export class MemoryService {
   }
 }
 
-// Singleton instance with defaults: 10 messages, 1 hour retention
+// Singleton. Limits are read from runtime config on each use, so they can be
+// changed from the admin UI without a restart.
 export const memoryService = new MemoryService()

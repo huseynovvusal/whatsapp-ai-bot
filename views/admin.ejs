@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin Dashboard - WhatsApp AI Bot</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
   <style>
     * {
       margin: 0;
@@ -606,6 +607,423 @@
     .log-debug { border-left: 3px solid #6b7280; }
     .log-debug .log-message { color: #9ca3af; }
 
+    .log-empty {
+      color: var(--gray-500);
+      justify-content: center;
+      padding: 2rem 1rem;
+    }
+    .log-empty .log-message { color: var(--gray-500); }
+
+    /* Logs header + toolbar */
+    .logs-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+
+    .logs-toolbar {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .logs-input {
+      width: auto;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.813rem;
+      border: 1px solid var(--gray-300);
+      border-radius: 0.5rem;
+      background: var(--white);
+    }
+
+    #log-search { min-width: 180px; }
+
+    .btn-sm {
+      padding: 0.375rem 0.75rem;
+      font-size: 0.75rem;
+    }
+
+    .btn-outline {
+      background: var(--white);
+      color: var(--gray-700);
+      border: 1px solid var(--gray-300);
+    }
+
+    .btn-outline:hover {
+      background: var(--gray-50);
+    }
+
+    .log-hidden { display: none !important; }
+
+    /* ---------------------------------------------------------------
+       Analytics charts
+
+       Chart roles are declared once here so a future dark mode is a
+       single-block swap. The series hue (#4f46e5, the app's brand
+       indigo) is validated against the white card surface: it clears
+       the lightness band, chroma floor and 3:1 contrast gates.
+       Every chart plots ONE series, so colour never carries identity.
+       --------------------------------------------------------------- */
+    :root {
+      --chart-surface: var(--white);
+      --chart-series-1: #4f46e5;
+      --chart-grid: var(--gray-200);
+      --chart-axis-text: var(--gray-500);
+      --chart-ink: var(--gray-900);
+      --chart-ink-secondary: var(--gray-600);
+      --chart-delta-up: #006300;
+      --chart-delta-down: #d03b3b;
+    }
+
+    /* Filter row — scopes everything below it */
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+
+    .filter-label {
+      font-size: 0.813rem;
+      font-weight: 600;
+      color: var(--gray-600);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .range-group {
+      display: inline-flex;
+      background: var(--gray-100);
+      border-radius: 0.5rem;
+      padding: 0.25rem;
+      gap: 0.25rem;
+    }
+
+    .range-btn {
+      padding: 0.375rem 0.875rem;
+      border: none;
+      background: transparent;
+      border-radius: 0.375rem;
+      font-size: 0.813rem;
+      font-weight: 500;
+      color: var(--gray-600);
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+
+    .range-btn:hover { color: var(--gray-900); }
+
+    .range-btn.active {
+      background: var(--white);
+      color: var(--primary);
+      box-shadow: var(--shadow-sm);
+    }
+
+    #analytics-content { transition: opacity 0.15s; }
+    /* Refetch holds the previous render — no skeleton, no layout jump */
+    #analytics-content.is-loading { opacity: 0.5; }
+
+    .chart-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .chart-grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .chart-host {
+      position: relative;
+      width: 100%;
+      overflow: visible;
+    }
+
+    .chart-svg { display: block; width: 100%; overflow: visible; }
+
+    /* Marks: thin, with the data as the only loud thing */
+    .chart-line {
+      fill: none;
+      stroke: var(--chart-series-1);
+      stroke-width: 2;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+    }
+
+    .chart-area { fill: var(--chart-series-1); opacity: 0.1; }
+
+    .chart-bar { fill: var(--chart-series-1); transition: opacity 0.12s; }
+    .chart-bar.is-hover { opacity: 0.78; }
+
+    .chart-dot {
+      fill: var(--chart-series-1);
+      /* 2px surface ring keeps the marker legible where it crosses the line */
+      stroke: var(--chart-surface);
+      stroke-width: 2;
+    }
+
+    .chart-dot-hover {
+      fill: var(--chart-series-1);
+      stroke: var(--chart-surface);
+      stroke-width: 2;
+      pointer-events: none;
+    }
+
+    /* Chrome recedes: solid hairlines, never dashed */
+    .chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
+
+    .chart-crosshair {
+      stroke: var(--gray-400);
+      stroke-width: 1;
+      pointer-events: none;
+    }
+
+    /* Text wears text tokens, never the series colour */
+    .chart-axis-label {
+      fill: var(--chart-axis-text);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chart-row-label { fill: var(--chart-ink-secondary); font-size: 12px; }
+
+    .chart-value-label {
+      fill: var(--chart-ink);
+      font-size: 12px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chart-hit, .chart-overlay { cursor: crosshair; }
+    .chart-overlay:focus { outline: none; }
+    .chart-overlay:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+    /* Tooltip: value leads, label follows */
+    .chart-tooltip {
+      position: absolute;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.12s;
+      background: var(--gray-900);
+      color: var(--white);
+      border-radius: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.75rem;
+      white-space: nowrap;
+      z-index: 20;
+      box-shadow: var(--shadow-md);
+    }
+
+    .chart-tooltip.visible { opacity: 1; }
+
+    .chart-tooltip-title {
+      color: var(--gray-400);
+      margin-bottom: 0.25rem;
+      font-size: 0.688rem;
+    }
+
+    .chart-tooltip-row { display: flex; align-items: center; gap: 0.375rem; }
+
+    /* A short stroke keys the series — a filled box would be data-weight ink */
+    .chart-tooltip-key {
+      width: 10px;
+      height: 2px;
+      background: var(--chart-series-1);
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+
+    .chart-tooltip-value { font-variant-numeric: tabular-nums; }
+    .chart-tooltip-label { color: var(--gray-400); }
+
+    .chart-empty { text-align: center; padding: 3rem 1rem; color: var(--gray-500); }
+    .chart-empty-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+
+    /* Table view — the WCAG-clean twin of every chart */
+    .chart-table { width: 100%; border-collapse: collapse; }
+    .chart-table th {
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.688rem;
+      color: var(--gray-600);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--gray-200);
+    }
+    .chart-table td {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.813rem;
+      color: var(--gray-700);
+      border-bottom: 1px solid var(--gray-100);
+    }
+    .chart-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .delta-up { color: var(--chart-delta-up); font-weight: 600; }
+    .delta-down { color: var(--chart-delta-down); font-weight: 600; }
+    .delta-flat { color: var(--gray-500); font-weight: 600; }
+
+    /* Personality modes */
+    .pill {
+      display: inline-block;
+      padding: 0.0625rem 0.375rem;
+      border-radius: 0.25rem;
+      font-size: 0.625rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      background: #eef2ff;
+      color: var(--primary);
+      vertical-align: middle;
+      margin-left: 0.25rem;
+    }
+
+    .pill-warn { background: #fef3c7; color: #92400e; }
+
+    .mode-callout {
+      padding: 0.875rem 1rem;
+      background: #eef2ff;
+      border: 1px solid #c7d2fe;
+      border-radius: 0.5rem;
+      font-size: 0.813rem;
+      color: var(--gray-700);
+      line-height: 1.5;
+    }
+
+    .mode-select {
+      width: auto;
+      min-width: 150px;
+      padding: 0.375rem 0.5rem;
+      font-size: 0.75rem;
+      border: 1px solid var(--gray-300);
+      border-radius: 0.375rem;
+      background: var(--white);
+      cursor: pointer;
+    }
+
+    /* People & Memory panels */
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.75rem 1.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .detail-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--gray-100);
+    }
+
+    .detail-label {
+      font-size: 0.688rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--gray-500);
+      font-weight: 600;
+    }
+
+    .detail-value {
+      font-size: 0.875rem;
+      color: var(--gray-900);
+      word-break: break-word;
+    }
+
+    .detail-heading {
+      font-size: 0.938rem;
+      font-weight: 600;
+      color: var(--gray-900);
+      margin: 1.5rem 0 0.75rem;
+    }
+
+    .muted-note { color: var(--gray-500); font-size: 0.875rem; }
+
+    .mono-cell {
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 0.75rem;
+      background: var(--gray-100);
+      padding: 0.125rem 0.375rem;
+      border-radius: 0.25rem;
+    }
+
+    .badge + .badge { margin-left: 0.25rem; }
+
+    .message-list { display: flex; flex-direction: column; gap: 0.5rem; }
+
+    .message-item {
+      padding: 0.75rem;
+      background: var(--gray-50);
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+    }
+
+    .message-meta {
+      font-size: 0.688rem;
+      color: var(--gray-500);
+      margin-bottom: 0.25rem;
+    }
+
+    .message-text { font-size: 0.875rem; color: var(--gray-800); word-break: break-word; }
+
+    .inline-warning {
+      padding: 0.75rem 1rem;
+      background: #fef3c7;
+      border: 1px solid #fcd34d;
+      color: #92400e;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      margin-bottom: 1rem;
+    }
+
+    .memory-item {
+      padding: 0.75rem 1rem;
+      background: var(--gray-50);
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .memory-meta {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      font-size: 0.75rem;
+      color: var(--gray-600);
+      margin-bottom: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .memory-score {
+      font-weight: 700;
+      color: var(--primary);
+      font-variant-numeric: tabular-nums;
+      background: #eef2ff;
+      padding: 0.125rem 0.5rem;
+      border-radius: 0.25rem;
+    }
+
+    .memory-text {
+      font-family: inherit;
+      font-size: 0.813rem;
+      color: var(--gray-700);
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
     /* Access Control Lists */
     .access-list {
       display: flex;
@@ -733,6 +1151,112 @@
       gap: 0.75rem;
       justify-content: flex-end;
     }
+
+    /* ---- WhatsApp link-up panel ---- */
+    .link-panel {
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+      background: var(--gray-50);
+      padding: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .link-panel-status {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .link-headline {
+      font-size: 0.938rem;
+      font-weight: 600;
+      color: var(--gray-900);
+    }
+
+    .link-detail {
+      font-size: 0.875rem;
+      color: var(--gray-600);
+      margin-top: 0.125rem;
+    }
+
+    .link-detail:empty { display: none; }
+
+    /* The wait before a QR appears is several seconds; say so, visibly. */
+    .link-spinner {
+      width: 1.25rem;
+      height: 1.25rem;
+      flex: none;
+      border: 2px solid var(--gray-300);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: link-spin 0.8s linear infinite;
+    }
+
+    @keyframes link-spin { to { transform: rotate(360deg); } }
+
+    @media (prefers-reduced-motion: reduce) {
+      .link-spinner { animation-duration: 3s; }
+    }
+
+    .link-qr {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--gray-200);
+      text-align: center;
+    }
+
+    .link-qr img {
+      width: 100%;
+      max-width: 280px;
+      border-radius: 0.375rem;
+      background: #fff;
+    }
+
+    .link-steps {
+      margin-top: 0.75rem;
+      font-size: 0.813rem;
+      color: var(--gray-600);
+      line-height: 1.6;
+    }
+
+    /* ---- Progressive disclosure for the settings form ---- */
+    .settings-advanced > summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--gray-700);
+      padding: 0.625rem 0.875rem;
+      border: 1px solid var(--gray-200);
+      border-radius: 0.5rem;
+      background: var(--gray-50);
+      user-select: none;
+    }
+
+    .settings-advanced > summary::-webkit-details-marker { display: none; }
+
+    .settings-advanced > summary::before {
+      content: "▸";
+      display: inline-block;
+      margin-right: 0.5rem;
+      color: var(--gray-500);
+    }
+
+    .settings-advanced[open] > summary::before { content: "▾"; }
+
+    .settings-advanced > summary:hover { border-color: var(--gray-300); }
+
+    .settings-advanced[open] > summary { margin-bottom: 1rem; }
+
+    .settings-advanced { margin-bottom: 1.5rem; }
+
+    .notes-editor {
+      width: 100%;
+      min-height: 260px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.813rem;
+      line-height: 1.6;
+    }
   </style>
 </head>
 <body>
@@ -740,7 +1264,7 @@
   <header class="header">
     <div class="header-content">
       <div class="logo">
-        <span class="logo-icon">🤖</span>
+        <span class="logo-icon">◆</span>
         <h1>WhatsApp AI Bot</h1>
       </div>
       <div class="header-actions">
@@ -803,8 +1327,8 @@
     <div class="card" id="whatsapp-status-card" style="margin-top: 1.5rem;">
       <div class="card-header">
         <div>
-          <h2 class="card-title">WhatsApp Connection & Bot Control</h2>
-          <p class="card-subtitle">Connection status, QR code, and bot controls</p>
+          <h2 class="card-title">WhatsApp connection</h2>
+          <p class="card-subtitle">Link a device, and turn the bot on or off</p>
         </div>
         <div style="display: flex; gap: 0.75rem; align-items: center;">
           <div id="connection-status-home" class="connection-badge disconnected">
@@ -814,21 +1338,44 @@
         </div>
       </div>
       <div class="card-body">
+        <!--
+          One panel for the whole link-up, because it is one process with several
+          stages. It used to be two hidden divs that only ever appeared once a QR
+          arrived, so the several seconds before that showed nothing at all and
+          looked like a failure.
+        -->
+        <div class="link-panel" id="link-panel">
+          <div class="link-panel-status">
+            <span class="link-spinner" id="link-spinner" hidden></span>
+            <div>
+              <p class="link-headline" id="link-headline">Checking connection…</p>
+              <p class="link-detail" id="link-detail"></p>
+            </div>
+          </div>
+          <div class="link-qr" id="link-qr" hidden>
+            <img id="qr-image-home" src="" alt="QR code for linking WhatsApp">
+            <p class="link-steps">
+              On your phone: <strong>WhatsApp → Settings → Linked devices → Link a device</strong><br>
+              The code refreshes by itself if it expires.
+            </p>
+          </div>
+        </div>
+
         <!-- Bot Control Toggle -->
         <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
           <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
               <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">Bot Status</h3>
               <p style="font-size: 0.875rem; color: var(--gray-600);">
-                <span id="bot-status-text">Bot is currently OFF</span>
+                <span id="bot-status-text">Stopped</span>
               </p>
             </div>
             <div style="display: flex; gap: 0.5rem;">
               <button id="btn-start-bot" class="btn btn-primary" onclick="toggleBot(true)" style="display: none;">
-                ▶️ Start Bot
+                Start bot
               </button>
               <button id="btn-stop-bot" class="btn btn-secondary" onclick="toggleBot(false)" style="display: none;">
-                ⏸️ Stop Bot
+                Stop bot
               </button>
             </div>
           </div>
@@ -838,19 +1385,19 @@
         <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
             <div>
-              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">🔒 Access Control</h3>
+              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">Access control</h3>
               <p style="font-size: 0.875rem; color: var(--gray-600);">
                 <span id="access-mode-text">Current mode: <strong id="access-mode-value">Loading...</strong></span>
               </p>
             </div>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               <select id="access-control-mode-select" onchange="updateAccessMode()" style="padding: 0.5rem 1rem; border: 2px solid var(--gray-300); border-radius: 0.5rem; font-size: 0.875rem; background: white; color: var(--gray-900); cursor: pointer;">
-                <option value="disabled">🌍 Free Mode (Allow All)</option>
-                <option value="whitelist">✅ Whitelist Only</option>
-                <option value="blacklist">⛔ Block Blacklisted</option>
+                <option value="disabled">Everyone</option>
+                <option value="whitelist">Whitelist only</option>
+                <option value="blacklist">Everyone except blacklist</option>
               </select>
               <button class="btn btn-secondary" onclick="switchTab('access')" style="padding: 0.5rem 1rem; font-size: 0.875rem;">
-                ⚙️ Manage Lists
+                Manage lists
               </button>
             </div>
           </div>
@@ -860,40 +1407,24 @@
         <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
             <div>
-              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">💬 Group Response Mode</h3>
+              <h3 style="font-size: 1rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.25rem;">Group response mode</h3>
               <p style="font-size: 0.875rem; color: var(--gray-600);">
                 <span id="group-mode-text">Current mode: <strong id="group-mode-value">Loading...</strong></span>
               </p>
             </div>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               <select id="group-response-mode-select" onchange="updateGroupResponseMode()" style="padding: 0.5rem 1rem; border: 2px solid var(--gray-300); border-radius: 0.5rem; font-size: 0.875rem; background: white; color: var(--gray-900); cursor: pointer;">
-                <option value="mention-only">🏷️ Only When Tagged</option>
-                <option value="contextual">🤖 Smart/Contextual (AI decides)</option>
-                <option value="all">💬 Reply to All Messages</option>
+                <option value="mention-only">Only when tagged</option>
+                <option value="contextual">Smart — it decides when to join in</option>
+                <option value="all">Reply to every message</option>
               </select>
             </div>
           </div>
           <div style="margin-top: 0.75rem; padding: 0.75rem; background: var(--gray-100); border-radius: 0.375rem; font-size: 0.813rem; color: var(--gray-700);">
-            <strong>Modes:</strong><br>
-            • <strong>Only When Tagged:</strong> Bot responds only when mentioned/tagged in group<br>
-            • <strong>Smart/Contextual:</strong> AI decides when to join conversation naturally<br>
-            • <strong>Reply to All:</strong> Bot responds to every message in group
+            Applies to chats in <strong>Assistant</strong> mode. Chats set to <strong>Companion</strong>
+            always decide for themselves whether to join in — use <em>How much it joins in</em>
+            in Settings to tune that.
           </div>
-        </div>
-
-        <div id="qr-container-home" style="display: none;">
-          <p style="margin-bottom: 1rem; color: var(--gray-600);">Scan this QR code with WhatsApp:</p>
-          <div style="text-align: center; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem; border: 1px solid var(--gray-200);">
-            <img id="qr-image-home" src="" alt="QR Code" style="max-width: 350px; width: 100%;">
-          </div>
-          <p style="margin-top: 1rem; color: var(--gray-500); font-size: 0.875rem; text-align: center;">
-            📲 Open WhatsApp → Settings → Linked Devices → Link a Device
-          </p>
-        </div>
-        <div id="connected-info-home" style="display: none;">
-          <p style="color: var(--success); font-weight: 500; font-size: 0.938rem;">
-            ✅ Connected as: <span id="phone-number-home" style="font-family: monospace;">-</span>
-          </p>
         </div>
       </div>
     </div>
@@ -904,11 +1435,13 @@
 
     <!-- Tabs -->
     <div class="tabs">
-      <button class="tab active" onclick="switchTab('settings')">⚙️ Settings</button>
-      <button class="tab" onclick="switchTab('access')">🔒 Access Control</button>
-      <button class="tab" onclick="switchTab('conversations')">💬 Conversations</button>
-      <button class="tab" onclick="switchTab('analytics')">📊 Analytics</button>
-      <button class="tab" onclick="switchTab('logs')">📋 Logs</button>
+      <button class="tab active" onclick="switchTab('settings')">Settings</button>
+      <button class="tab" onclick="switchTab('access')">Access</button>
+      <button class="tab" onclick="switchTab('conversations')">Conversations</button>
+      <button class="tab" onclick="switchTab('people')">People</button>
+      <button class="tab" onclick="switchTab('knowledge')">Memory</button>
+      <button class="tab" onclick="switchTab('analytics')">Analytics</button>
+      <button class="tab" onclick="switchTab('logs')">Logs</button>
     </div>
 
     <!-- Settings Tab -->
@@ -916,40 +1449,40 @@
       <form id="settingsForm" onsubmit="saveSettings(event)">
         <div class="card">
           <div class="card-header">
-            <h2 class="card-title">Bot Configuration</h2>
-            <p class="card-subtitle">Configure bot name, admin numbers, and rate limiting</p>
+            <h2 class="card-title">Basics</h2>
+            <p class="card-subtitle">Who the bot is, and who is allowed to configure it</p>
           </div>
 
           <div class="form-grid">
             <div class="form-group">
-              <label>Bot Name (Mention Trigger)</label>
+              <label>Bot name</label>
               <input type="text" name="botName" value="<%= runtime.botName %>" required>
-              <span class="hint">Users mention this name to trigger the bot (e.g., @bot)</span>
+              <span class="hint">How the bot refers to itself. People get its attention by tagging it with WhatsApp's own @-mention, or by replying to one of its messages — no keyword needed.</span>
             </div>
 
             <div class="form-group">
-              <label>Admin Phone Numbers</label>
+              <label>Admin phone numbers</label>
               <input type="text" name="adminNumbers" value="<%= (runtime.adminNumbers || []).join(',') %>" placeholder="1234567890,9876543210">
               <span class="hint">Comma-separated, digits only (no + or spaces)</span>
             </div>
 
-            <div class="form-row">
-              <div class="form-group">
-                <label>Rate Limit (requests)</label>
-                <input type="number" name="rateLimitMaxRequests" value="<%= runtime.rateLimitMaxRequests %>" min="1" required>
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Also trigger on its name in the text</label>
+                <span class="hint">Off by default. When on, any message containing the bot's name counts as addressing it — including sentences that merely mention the word.</span>
               </div>
-              <div class="form-group">
-                <label>Rate Window (ms)</label>
-                <input type="number" name="rateLimitWindowMs" value="<%= runtime.rateLimitWindowMs %>" min="1000" required>
-              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="textMentionTrigger" <%= runtime.textMentionTrigger ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
             </div>
           </div>
         </div>
 
         <div class="card">
           <div class="card-header">
-            <h2 class="card-title">AI Configuration</h2>
-            <p class="card-subtitle">Configure LLM provider, API keys, and system prompt</p>
+            <h2 class="card-title">AI provider</h2>
+            <p class="card-subtitle">Which model answers, and the key it uses</p>
           </div>
 
           <div class="form-grid">
@@ -987,13 +1520,169 @@
               </div>
             </div>
 
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Personality modes</h2>
+            <p class="card-subtitle">
+              Each mode has its own prompt, so switching a chat swaps the whole voice.
+              Any chat can override the default from the Conversations tab or with
+              <code>!mode assistant|companion</code>. Changes apply to the next message.
+            </p>
+          </div>
+
+          <div class="form-grid">
             <div class="form-group">
-              <label>System Prompt</label>
-              <textarea name="systemPrompt" rows="4" required><%= runtime.systemPrompt %></textarea>
-              <span class="hint">Defines the bot's personality and behavior</span>
+              <label>Default mode</label>
+              <select name="defaultPersona" id="defaultPersona">
+                <option value="assistant" <%= (runtime.defaultPersona || 'assistant') === 'assistant' ? 'selected' : '' %>>🎯 Assistant — concise and task-focused</option>
+                <option value="companion" <%= runtime.defaultPersona === 'companion' ? 'selected' : '' %>>💬 Companion — conversational, joins in when it fits</option>
+              </select>
+              <span class="hint">Applies to any chat without its own override.</span>
+            </div>
+
+            <div class="mode-callout">
+              <strong>Companion mode is proactive.</strong> In groups it decides for itself when a
+              message is worth joining, so it does not wait to be tagged — the Group Response Mode
+              setting above does not apply to chats using it. It can also reply with just an emoji
+              reaction when a message deserves acknowledgement but not a full answer.
+            </div>
+
+            <div class="form-group">
+              <label>Assistant prompt</label>
+              <textarea name="assistantPrompt" rows="6" placeholder="Leave blank to use the built-in default"><%= runtime.assistantPrompt || '' %></textarea>
+              <span class="hint">Blank uses the built-in default (short, clear, task-focused).</span>
+            </div>
+
+            <div class="form-group">
+              <label>Companion prompt</label>
+              <textarea name="companionPrompt" rows="10" placeholder="Leave blank to use the built-in default"><%= runtime.companionPrompt || '' %></textarea>
+              <span class="hint">
+                Blank uses the built-in default, which matches the group's tone, keeps replies
+                short, and stays honest if someone sincerely asks whether it's a bot.
+              </span>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Adaptive style <span class="pill">Companion</span></label>
+                <span class="hint">
+                  Reads how each chat actually writes — message length, emoji use, lowercase habits,
+                  shorthand, language — and tells the bot to match that register. Computed from stored
+                  messages, so it costs no extra API calls.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="companionAdaptiveStyle" <%= runtime.companionAdaptiveStyle !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Free mode <span class="pill pill-warn">Companion</span></label>
+                <span class="hint">
+                  Talks like a close friend: swearing, dark humour, sarcasm and real opinions, with no
+                  disclaimers, hedging or moralising. It still reads the room — it drops the banter when
+                  someone is genuinely upset. Note that your AI provider applies its own limits on top of
+                  this, which no prompt can change.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="companionFreeMode" <%= runtime.companionFreeMode ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label>Maximum reply length <span class="pill">Companion</span></label>
+              <input type="number" name="companionMaxChars" min="0" max="4000" value="<%= runtime.companionMaxChars === undefined ? 350 : runtime.companionMaxChars %>">
+              <span class="hint">
+                Characters. Enforced twice: the model gets a matching token budget, and anything still
+                over is trimmed on a sentence boundary. <strong>0 = no limit.</strong> 350 ≈ two chat
+                sentences. Assistant mode is never capped.
+              </span>
+            </div>
+
+            <div class="form-group">
+              <label>How much it joins in <span class="pill">Companion</span></label>
+              <select name="companionChattiness">
+                <option value="selective" <%= (runtime.companionChattiness || 'selective') === 'selective' ? 'selected' : '' %>>Selective — about 1 message in 10 is the bot</option>
+                <option value="present" <%= runtime.companionChattiness === 'present' ? 'selected' : '' %>>Present — about 1 in 5</option>
+                <option value="talkative" <%= runtime.companionChattiness === 'talkative' ? 'selected' : '' %>>Talkative — about 1 in 3</option>
+              </select>
+              <span class="hint">
+                A ceiling on the bot's share of a chat. When it has been talking too much
+                it stays quiet, even if a reply would have been reasonable. Override per
+                chat from the Conversations tab or with <code>!chattiness</code>.
+              </span>
+            </div>
+
+            <div class="mode-callout">
+              <strong>How it decides when to speak.</strong> Rather than judging every message
+              the instant it arrives, Companion waits for the conversation to settle — longer
+              when a chat is busy, shorter when it is quiet — then considers the whole burst at
+              once. That is why several messages can go by before it answers, the same way a
+              person reads a few messages and replies to the thread. It also means a rapid
+              burst costs one AI call instead of one per message. Being @mentioned always gets
+              a prompt reply.
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Human delivery <span class="pill">Companion</span></label>
+                <span class="hint">
+                  Pauses to "read", holds the typing indicator for as long as the reply would
+                  actually take to type, sends longer replies as two or three messages, and
+                  only quotes when the thread has moved on. Turn off to send instantly in one
+                  message.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="humanTiming" <%= runtime.humanTiming !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Occasional late replies <span class="pill">Companion</span></label>
+                <span class="hint">
+                  Sometimes answers a minute or two later, like someone who put their phone
+                  down. Off by default — it will occasionally reply to a moment that has passed.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="companionLateReplies" <%= runtime.companionLateReplies ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Emoji reactions</label>
+                <span class="hint">
+                  Assistant uses 👀. Companion picks an emoji that fits — chosen by the same call
+                  that decides whether to reply, so it costs no extra request.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="emojiReactions" <%= runtime.emojiReactions !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
             </div>
           </div>
         </div>
+
+        <!--
+          Everything below is a knob most operators never need to touch. It is
+          collapsed rather than removed: the settings page had twenty-odd fields
+          on one screen, which is why it read as overwhelming.
+        -->
+        <details class="settings-advanced">
+          <summary>Advanced settings — responses, memory, limits</summary>
 
         <div class="card">
           <div class="card-header">
@@ -1039,15 +1728,176 @@
               <div class="form-group">
                 <label>Access Control Mode</label>
                 <select name="accessControlMode">
-                  <option value="disabled" <%= (runtime.accessControlMode || 'disabled') === 'disabled' ? 'selected' : '' %>>Disabled (Allow All)</option>
-                  <option value="whitelist" <%= runtime.accessControlMode === 'whitelist' ? 'selected' : '' %>>Whitelist (Only Allowed)</option>
-                  <option value="blacklist" <%= runtime.accessControlMode === 'blacklist' ? 'selected' : '' %>>Blacklist (Block Specific)</option>
+                  <option value="disabled" <%= (runtime.accessControlMode || 'disabled') === 'disabled' ? 'selected' : '' %>>Everyone</option>
+                  <option value="whitelist" <%= runtime.accessControlMode === 'whitelist' ? 'selected' : '' %>>Whitelist only</option>
+                  <option value="blacklist" <%= runtime.accessControlMode === 'blacklist' ? 'selected' : '' %>>Everyone except blacklist</option>
                 </select>
                 <span class="hint">Control which contacts/groups can interact with the bot</span>
               </div>
             </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Rate limit (messages per person)</label>
+                <input type="number" name="rateLimitMaxRequests" value="<%= runtime.rateLimitMaxRequests %>" min="1" required>
+              </div>
+              <div class="form-group">
+                <label>Rate limit window (ms)</label>
+                <input type="number" name="rateLimitWindowMs" value="<%= runtime.rateLimitWindowMs %>" min="1000" required>
+              </div>
+            </div>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Memory &amp; Recall</h2>
+            <p class="card-subtitle">
+              Short-term memory is the recent conversation sent with every prompt. Long-term
+              recall searches all past messages by meaning and adds only the relevant parts,
+              which keeps token use low without limiting how far back the bot can remember.
+            </p>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Recent messages kept per chat</label>
+                <input type="number" name="memoryMessageLimit" min="0" value="<%= runtime.memoryMessageLimit %>">
+                <span class="hint">Sent with every prompt. <strong>0 = unlimited</strong> (raises token cost on busy chats).</span>
+              </div>
+              <div class="form-group">
+                <label>Short-term memory window (ms)</label>
+                <input type="number" name="memoryWindowMs" min="0" value="<%= runtime.memoryWindowMs %>">
+                <span class="hint"><strong>0 = never expires.</strong> 3600000 = 1 hour, 86400000 = 1 day.</span>
+              </div>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Long-term recall (RAG)</label>
+                <span class="hint">Let the bot search all past conversations by meaning</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="ragEnabled" <%= runtime.ragEnabled !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Recall across different chats</label>
+                <span class="hint">⚠️ Off by default: when on, something said in one group can surface in another</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="ragCrossChat" <%= runtime.ragCrossChat ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Memories per reply</label>
+                <input type="number" name="ragTopK" min="1" max="20" value="<%= runtime.ragTopK || 4 %>">
+                <span class="hint">How many recalled chunks to include (1-20)</span>
+              </div>
+              <div class="form-group">
+                <label>Recall size limit (characters)</label>
+                <input type="number" name="ragMaxChars" min="0" max="20000" step="500" value="<%= runtime.ragMaxChars === undefined ? 2500 : runtime.ragMaxChars %>">
+                <span class="hint">Total recalled conversation put in a prompt. <strong>0 = no cap.</strong> The single biggest lever on cost per reply.</span>
+              </div>
+              <div class="form-group">
+                <label>Relevance threshold</label>
+                <input type="number" name="ragMinScore" min="0" max="1" step="0.05" value="<%= runtime.ragMinScore === undefined ? 0.3 : runtime.ragMinScore %>">
+                <span class="hint">0-1. Higher = stricter; below this a memory is ignored.</span>
+              </div>
+              <div class="form-group">
+                <label>Embedding model (optional)</label>
+                <input type="text" name="embeddingModel" value="<%= runtime.embeddingModel || '' %>" placeholder="provider default">
+                <span class="hint">Blank uses the default. Changing this requires a rebuild in the Memory tab.</span>
+              </div>
+            </div>
+
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Standing notes per chat</label>
+                <span class="hint">
+                  A short, rolling profile of each chat — who the people are, what is going on,
+                  how the group talks — rewritten from the conversation and included in every
+                  prompt. Read and edit them in the Memory tab.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="groupMemoryEnabled" <%= runtime.groupMemoryEnabled !== false ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Rewrite the notes every N messages</label>
+                <input type="number" name="groupMemoryRefreshEvery" min="5" max="500" value="<%= runtime.groupMemoryRefreshEvery || 40 %>">
+                <span class="hint">One extra AI call per rewrite, not per message. Lower = fresher, more expensive.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Usage limits</h2>
+            <p class="card-subtitle">
+              The bot is driven by whoever is in the chat, so without a ceiling a busy group can
+              run up an unbounded provider bill. Limits are in <strong>tokens</strong>, which is what
+              providers actually report — a price list would drift out of date.
+            </p>
+          </div>
+
+          <div class="form-grid">
+            <div class="toggle-group">
+              <div class="toggle-info">
+                <label class="toggle-label">Enforce usage limits</label>
+                <span class="hint">
+                  When a limit is reached the bot stops calling the AI and says so, instead of
+                  failing silently. Admin commands keep working.
+                </span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" name="budgetEnabled" <%= runtime.budgetEnabled ? 'checked' : '' %>>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Daily token limit</label>
+                <input type="number" name="dailyTokenLimit" min="0" value="<%= runtime.dailyTokenLimit || 0 %>">
+                <span class="hint"><strong>0 = no limit.</strong> Resets at midnight.</span>
+              </div>
+              <div class="form-group">
+                <label>Monthly token limit</label>
+                <input type="number" name="monthlyTokenLimit" min="0" value="<%= runtime.monthlyTokenLimit || 0 %>">
+                <span class="hint"><strong>0 = no limit.</strong> Calendar month.</span>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Price per 1M tokens (optional)</label>
+                <input type="number" name="costPerMillionTokens" min="0" step="0.01" value="<%= runtime.costPerMillionTokens || 0 %>">
+                <span class="hint">Display only — turns token counts into an estimated cost. 0 hides it.</span>
+              </div>
+              <div class="form-group">
+                <label>Currency label</label>
+                <input type="text" name="costCurrency" value="<%= runtime.costCurrency || 'USD' %>" maxlength="8">
+              </div>
+            </div>
+
+            <div id="budget-status" class="mode-callout">Loading current usage…</div>
+          </div>
+        </div>
+
+        </details>
 
         <div class="btn-group">
           <button type="submit" class="btn btn-primary">
@@ -1108,6 +1958,7 @@
               <tr>
                 <th>Chat Name</th>
                 <th>Type</th>
+                <th>Mode</th>
                 <th>Chat ID</th>
                 <th>Messages</th>
                 <th>Actions</th>
@@ -1115,7 +1966,7 @@
             </thead>
             <tbody id="conversations-list">
               <tr>
-                <td colspan="5">
+                <td colspan="6">
                   <div class="empty-state">
                     <div class="empty-state-icon">📭</div>
                     <p>No conversations yet</p>
@@ -1132,16 +1983,204 @@
       </div>
     </div>
 
-    <!-- Analytics Tab -->
-    <div class="tab-content" id="tab-analytics">
+    <!-- People Tab -->
+    <div class="tab-content" id="tab-people">
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">This bot's account</h2>
+            <p class="card-subtitle">The WhatsApp identity messages are sent from</p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="loadPeople()">Refresh</button>
+        </div>
+        <div id="me-card">
+          <p style="color: var(--gray-500);">Loading…</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">Known people</h2>
+            <p class="card-subtitle">Everyone the bot has seen, across all chats. Select a person for full details.</p>
+          </div>
+          <input type="search" id="people-search" class="logs-input" placeholder="Search name or number…" oninput="renderPeople()" aria-label="Search people">
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Number</th>
+                <th>Messages</th>
+                <th>Chats</th>
+                <th>Last seen</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="people-list">
+              <tr><td colspan="6"><div class="empty-state"><p>Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="person-detail-card" style="display:none;">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title" id="person-detail-title">Person</h2>
+            <p class="card-subtitle">Profile, activity and recent messages</p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="closePersonDetail()">Close</button>
+        </div>
+        <div id="person-detail-body"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">Chat participants</h2>
+            <p class="card-subtitle">For groups this comes from WhatsApp, so it includes people who haven't spoken yet</p>
+          </div>
+          <select id="participants-chat-select" class="logs-input" onchange="loadParticipants()" aria-label="Select a chat">
+            <option value="">Select a chat…</option>
+          </select>
+        </div>
+        <div id="participants-body">
+          <p style="color: var(--gray-500); padding: 1rem 0;">Pick a chat to see who is in it.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge / Memory Tab -->
+    <div class="tab-content" id="tab-knowledge">
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">Long-term memory (RAG)</h2>
+            <p class="card-subtitle">
+              Past conversations are split into chunks, embedded, and recalled by meaning when
+              someone asks a related question — so the bot remembers beyond its recent-message window.
+            </p>
+          </div>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="indexKnowledge()">Index new</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="reindexKnowledge()">Rebuild all</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="clearKnowledge()">Clear</button>
+          </div>
+        </div>
+        <div id="knowledge-status">
+          <p style="color: var(--gray-500);">Loading…</p>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">Analytics</h2>
-          <p class="card-subtitle">Usage statistics and insights</p>
+          <h2 class="card-title">Test recall</h2>
+          <p class="card-subtitle">See exactly what the bot would remember for a question — without sending a message</p>
         </div>
-        <div class="empty-state">
-          <div class="empty-state-icon">📊</div>
-          <p>Analytics dashboard coming soon</p>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem;">
+          <input type="search" id="knowledge-query" class="logs-input" style="flex:1; min-width:240px;" placeholder="e.g. what did we decide about the trip?" aria-label="Recall query">
+          <select id="knowledge-scope" class="logs-input" aria-label="Scope">
+            <option value="">All chats</option>
+          </select>
+          <button type="button" class="btn btn-primary btn-sm" onclick="searchKnowledge()">Search</button>
+        </div>
+        <div id="knowledge-results"></div>
+      </div>
+
+      <!--
+        Standing notes: the bot's MEMORY.md for a chat. Kept next to RAG because
+        both are "what it remembers", but this one is short, editable, and always
+        in the prompt rather than retrieved on a match.
+      -->
+      <div class="card">
+        <div class="card-header chart-card-header">
+          <div>
+            <h2 class="card-title">Standing notes</h2>
+            <p class="card-subtitle">
+              A short profile of each chat that goes into every prompt. Rewritten automatically
+              from the conversation — edit it here to correct or add anything, and the bot
+              believes the correction from its next message.
+            </p>
+          </div>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="refreshNotes()">Rewrite now</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="saveNotes()">Save</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="clearNotes()">Clear</button>
+          </div>
+        </div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.75rem; align-items:center;">
+          <select id="notes-chat" class="logs-input" style="flex:1; min-width:240px;" onchange="loadNotes()" aria-label="Chat">
+            <option value="">Pick a chat…</option>
+          </select>
+          <span class="hint" id="notes-meta"></span>
+        </div>
+        <textarea id="notes-editor" class="notes-editor" placeholder="Nothing noted yet. Pick a chat, then use “Rewrite now” to build the notes from its conversation — or just type them yourself."></textarea>
+      </div>
+    </div>
+
+    <!-- Analytics Tab -->
+    <div class="tab-content" id="tab-analytics">
+      <!-- Filter row: one row, above everything it scopes -->
+      <div class="filter-row">
+        <span class="filter-label">Range</span>
+        <div class="range-group" role="group" aria-label="Select time range">
+          <button type="button" class="range-btn active" data-range="7" aria-pressed="true">Last 7 days</button>
+          <button type="button" class="range-btn" data-range="30" aria-pressed="false">Last 30 days</button>
+          <button type="button" class="range-btn" data-range="90" aria-pressed="false">Last 90 days</button>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="refreshAnalytics()">Refresh</button>
+      </div>
+
+      <div id="analytics-content">
+        <!-- KPI row -->
+        <div class="stats-grid" id="analytics-stats"></div>
+
+        <div class="card">
+          <div class="card-header chart-card-header">
+            <div>
+              <h2 class="card-title">Messages per day</h2>
+              <p class="card-subtitle">Total messages recorded each day in the selected range</p>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" data-table-toggle="timeseries" aria-pressed="false">Table view</button>
+          </div>
+          <div class="chart-host" id="chart-timeseries"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header chart-card-header">
+            <div>
+              <h2 class="card-title">Activity by hour</h2>
+              <p class="card-subtitle">When messages arrive, aggregated across the range (server local time)</p>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" data-table-toggle="hourly" aria-pressed="false">Table view</button>
+          </div>
+          <div class="chart-host" id="chart-hourly"></div>
+        </div>
+
+        <div class="chart-grid-2">
+          <div class="card">
+            <div class="card-header chart-card-header">
+              <div>
+                <h2 class="card-title">Most active people</h2>
+                <p class="card-subtitle">Excludes the bot's own replies</p>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" data-table-toggle="users" aria-pressed="false">Table view</button>
+            </div>
+            <div class="chart-host" id="chart-top-users"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header chart-card-header">
+              <div>
+                <h2 class="card-title">Busiest chats</h2>
+                <p class="card-subtitle">Groups and private chats by message volume</p>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" data-table-toggle="chats" aria-pressed="false">Table view</button>
+            </div>
+            <div class="chart-host" id="chart-top-chats"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1177,21 +2216,32 @@
 
       <!-- Live Logs -->
       <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">Live Logs</h2>
-          <div style="display: flex; gap: 0.5rem;">
-            <button type="button" class="btn btn-outline" onclick="clearLogs()">Clear</button>
-            <button type="button" class="btn btn-outline" onclick="toggleAutoScroll()" id="autoscroll-btn">
+        <div class="card-header logs-header">
+          <div>
+            <h2 class="card-title">Live Logs</h2>
+            <p class="card-subtitle"><span id="log-count">0</span> entries · streaming in real time</p>
+          </div>
+          <div class="logs-toolbar">
+            <input type="search" id="log-search" class="logs-input" placeholder="Filter messages…" oninput="applyLogFilters()" aria-label="Filter log messages">
+            <select id="log-level-filter" class="logs-input" onchange="applyLogFilters()" aria-label="Filter by log level">
+              <option value="all">All levels</option>
+              <option value="info">Info</option>
+              <option value="success">Success</option>
+              <option value="warn">Warn</option>
+              <option value="error">Error</option>
+              <option value="debug">Debug</option>
+            </select>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAutoScroll()" id="autoscroll-btn">
               <span id="autoscroll-text">Auto-scroll: ON</span>
             </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="downloadLogs()">Download</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="clearLogs()">Clear</button>
           </div>
         </div>
         <div class="card-body" style="padding: 0;">
           <div id="logs-container" class="logs-container">
-            <div class="log-entry log-info">
-              <span class="log-time">--:--:--</span>
-              <span class="log-source">[System]</span>
-              <span class="log-message">Waiting for logs...</span>
+            <div class="log-entry log-empty">
+              <span class="log-message">Waiting for logs…</span>
             </div>
           </div>
         </div>
@@ -1240,17 +2290,54 @@
   </div>
 
   <script>
-    // Tab switching
+    // CSRF: the panel authenticates with a session cookie, which a browser
+    // attaches to cross-site requests too. Every state-changing call must echo
+    // this token in a header, which cross-origin JavaScript cannot set.
+    window.CSRF_TOKEN = <%- JSON.stringify(csrfToken || "") %>;
+
+    // Wrapped once here rather than at ~28 call sites, so a new fetch cannot
+    // accidentally ship without the token.
+    (function () {
+      const rawFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        init = init || {};
+        const method = (init.method || 'GET').toUpperCase();
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        const sameOrigin = !/^https?:\/\//i.test(url) || url.startsWith(window.location.origin);
+        if (sameOrigin && method !== 'GET' && method !== 'HEAD') {
+          const headers = new Headers(init.headers || {});
+          if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', window.CSRF_TOKEN);
+          init.headers = headers;
+          if (!init.credentials) init.credentials = 'same-origin';
+        }
+        return rawFetch(input, init);
+      };
+    })();
+
+    // Tab switching (robust: does not rely on the global `event` object, so it
+    // works when invoked programmatically e.g. from the "Manage Lists" button)
     function switchTab(tabName) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      event.target.classList.add('active');
-      document.getElementById('tab-' + tabName).classList.add('active');
+
+      const content = document.getElementById('tab-' + tabName);
+      if (content) content.classList.add('active');
+
+      const btn = Array.from(document.querySelectorAll('.tabs .tab'))
+        .find(t => (t.getAttribute('onclick') || '').includes("switchTab('" + tabName + "')"));
+      if (btn) btn.classList.add('active');
 
       if (tabName === 'conversations') {
         loadConversations();
       } else if (tabName === 'access') {
         loadAccessLists();
+      } else if (tabName === 'analytics') {
+        // Charts need a measurable width, so they render on first reveal
+        if (typeof initAnalyticsTab === 'function') initAnalyticsTab();
+      } else if (tabName === 'people') {
+        if (typeof loadPeople === 'function') loadPeople();
+      } else if (tabName === 'knowledge') {
+        if (typeof loadKnowledge === 'function') loadKnowledge();
       }
     }
 
@@ -1279,7 +2366,7 @@
 
         if (!data.conversations || data.conversations.length === 0) {
           tbody.innerHTML = `
-            <tr><td colspan="5">
+            <tr><td colspan="6">
               <div class="empty-state">
                 <div class="empty-state-icon">📭</div>
                 <p>No conversations yet</p>
@@ -1288,13 +2375,29 @@
           return;
         }
 
+        // Personality overrides, so each row can show the mode actually in force
+        let personaInfo = { defaultPersona: 'assistant', overrides: {} };
+        try {
+          const pRes = await fetch('/api/personas');
+          if (pRes.ok) personaInfo = await pRes.json();
+        } catch (e) { /* fall back to showing the default everywhere */ }
+
         tbody.innerHTML = data.conversations.map(c => {
           const isGroup = c.id.includes('@g.us');
           const chatType = isGroup ? 'group' : 'contact';
+          const override = personaInfo.overrides[c.id] || '';
+          const effective = override || personaInfo.defaultPersona;
+          const modeCell = `
+            <select class="mode-select" onchange="setChatPersona('${c.id}', this.value)" aria-label="Personality mode">
+              <option value="default" ${!override ? 'selected' : ''}>Default (${effective === 'companion' ? 'Companion' : 'Assistant'})</option>
+              <option value="assistant" ${override === 'assistant' ? 'selected' : ''}>🎯 Assistant</option>
+              <option value="companion" ${override === 'companion' ? 'selected' : ''}>💬 Companion</option>
+            </select>`;
           return `
           <tr>
             <td><strong>${c.name || '(Unknown)'}</strong></td>
             <td><span class="badge ${isGroup ? 'badge-info' : 'badge-success'}">${isGroup ? 'Group' : 'Contact'}</span></td>
+            <td>${modeCell}</td>
             <td>
               <code style="font-size: 0.75rem; background: var(--gray-100); padding: 0.25rem 0.5rem; border-radius: 0.25rem; user-select: all;">${c.id}</code>
               <button class="btn btn-secondary btn-sm" onclick="copyToClipboard('${c.id}')" style="margin-left: 0.5rem; padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Copy ID">
@@ -1319,6 +2422,29 @@
       }
     }
 
+    // Set a single chat's personality mode ("default" clears the override)
+    async function setChatPersona(chatId, persona) {
+      try {
+        const res = await fetch('/api/chats/' + encodeURIComponent(chatId) + '/persona', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ persona: persona === 'default' ? null : persona })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          showAlert('success', persona === 'default'
+            ? 'Chat now follows the default mode'
+            : 'Chat mode set to ' + (persona === 'companion' ? 'Companion' : 'Assistant'));
+          loadConversations();
+        } else {
+          showAlert('error', data.error || 'Failed to set mode');
+        }
+      } catch (err) {
+        console.error('Failed to set chat persona:', err);
+        showAlert('error', 'Failed to set mode');
+      }
+    }
+
     // Toggle provider
     function toggleProvider() {
       const provider = document.getElementById('llmProvider').value;
@@ -1333,8 +2459,12 @@
       const formData = new FormData(form);
       const data = Object.fromEntries(formData);
 
-      // Convert checkboxes
-      ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses'].forEach(key => {
+      // Unchecked boxes are absent from FormData, so they must be set explicitly
+      ['enablePrivateChat', 'respondToGroupMessages', 'contextualGroupResponses',
+       'ragEnabled', 'ragCrossChat', 'emojiReactions',
+       'companionAdaptiveStyle', 'companionFreeMode', 'budgetEnabled',
+       'humanTiming', 'companionLateReplies', 'groupMemoryEnabled',
+       'textMentionTrigger'].forEach(key => {
         data[key] = formData.has(key);
       });
 
@@ -1480,7 +2610,7 @@
         } else if (message.type === 'connection') {
           const status = message.data;
           updateConnectionStatus(status.connected, status.phoneNumber);
-          updateConnectionStatusHome(status.connected, status.phoneNumber);
+          updateConnectionStatusHome(status.connected, status.phoneNumber, status.state, status.detail);
         }
       };
 
@@ -1496,26 +2626,52 @@
       };
     }
 
+    function updateLogCount() {
+      const el = document.getElementById('log-count');
+      if (el) el.textContent = String(document.querySelectorAll('#logs-container .log-entry:not(.log-empty)').length);
+    }
+
+    function matchesLogFilters(entry) {
+      const levelFilter = (document.getElementById('log-level-filter') || {}).value || 'all';
+      const search = ((document.getElementById('log-search') || {}).value || '').toLowerCase().trim();
+      const level = entry.getAttribute('data-level') || '';
+      const text = (entry.getAttribute('data-text') || '').toLowerCase();
+      if (levelFilter !== 'all' && level !== levelFilter) return false;
+      if (search && !text.includes(search)) return false;
+      return true;
+    }
+
+    function applyLogFilters() {
+      document.querySelectorAll('#logs-container .log-entry:not(.log-empty)').forEach(entry => {
+        entry.classList.toggle('log-hidden', !matchesLogFilters(entry));
+      });
+    }
+
     function addLog(level, message, source) {
       const logsContainer = document.getElementById('logs-container');
 
-      // Remove "Waiting for logs..." message
-      if (logsContainer.children.length === 1 && logsContainer.children[0].querySelector('.log-time')?.textContent === '--:--:--') {
-        logsContainer.innerHTML = '';
-      }
-
-      // Create log entry
-      const logEntry = document.createElement('div');
-      logEntry.className = `log-entry log-${level}`;
+      // Remove placeholder ("Waiting for logs…") message
+      const placeholder = logsContainer.querySelector('.log-empty');
+      if (placeholder) placeholder.remove();
 
       const time = new Date().toLocaleTimeString();
       const sourceText = source ? `[${source}]` : '';
 
+      // Create log entry
+      const logEntry = document.createElement('div');
+      logEntry.className = `log-entry log-${level}`;
+      logEntry.setAttribute('data-level', level);
+      logEntry.setAttribute('data-text', `${sourceText} ${message}`);
+      logEntry.setAttribute('data-time', time);
+
       logEntry.innerHTML = `
         <span class="log-time">${time}</span>
-        <span class="log-source">${sourceText}</span>
+        <span class="log-source">${escapeHtml(sourceText)}</span>
         <span class="log-message">${escapeHtml(message)}</span>
       `;
+
+      // Apply current filters immediately so hidden entries stay hidden
+      if (!matchesLogFilters(logEntry)) logEntry.classList.add('log-hidden');
 
       logsContainer.appendChild(logEntry);
 
@@ -1524,10 +2680,32 @@
         logsContainer.removeChild(logsContainer.firstChild);
       }
 
+      updateLogCount();
+
       // Auto scroll to bottom
       if (autoScroll) {
         logsContainer.scrollTop = logsContainer.scrollHeight;
       }
+    }
+
+    function downloadLogs() {
+      const entries = Array.from(document.querySelectorAll('#logs-container .log-entry:not(.log-empty)'));
+      if (!entries.length) { showAlert('error', 'No logs to download'); return; }
+      const lines = entries.map(e => {
+        const time = e.getAttribute('data-time') || '';
+        const level = (e.getAttribute('data-level') || '').toUpperCase();
+        const text = e.getAttribute('data-text') || '';
+        return `${time} [${level}] ${text}`.trim();
+      });
+      const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `whatsapp-bot-logs-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     }
 
     function showQRCode(qrImage) {
@@ -1559,12 +2737,11 @@
     function clearLogs() {
       const logsContainer = document.getElementById('logs-container');
       logsContainer.innerHTML = `
-        <div class="log-entry log-info">
-          <span class="log-time">--:--:--</span>
-          <span class="log-source">[System]</span>
-          <span class="log-message">Logs cleared</span>
+        <div class="log-entry log-empty">
+          <span class="log-message">Logs cleared — waiting for new entries…</span>
         </div>
       `;
+      updateLogCount();
     }
 
     function toggleAutoScroll() {
@@ -1739,30 +2916,85 @@
       }
     }
 
-    // Update connection status for home screen too
-    function updateConnectionStatusHome(connected, phoneNumber) {
-      const statusBadge = document.getElementById('connection-status-home');
-      const statusText = statusBadge.querySelector('.status-text');
+    /*
+     * The link-up panel is driven entirely from this one object, so the panel
+     * can never end up in a half-updated state (QR still on screen after the
+     * phone has been linked, "Disconnected" showing while a QR is displayed).
+     */
+    const linkState = { state: 'idle', connected: false, phoneNumber: null, detail: '', qr: null };
 
-      if (connected) {
-        statusBadge.className = 'connection-badge connected';
-        statusText.textContent = 'Connected';
-        document.getElementById('qr-container-home').style.display = 'none';
-        document.getElementById('connected-info-home').style.display = 'block';
-        if (phoneNumber) {
-          document.getElementById('phone-number-home').textContent = phoneNumber;
-        }
-      } else {
-        statusBadge.className = 'connection-badge disconnected';
-        statusText.textContent = 'Disconnected';
-        document.getElementById('connected-info-home').style.display = 'none';
+    const LINK_HEADLINES = {
+      idle: 'Not linked to WhatsApp',
+      starting: 'Getting your QR code ready…',
+      awaiting_scan: 'Scan this code with your phone',
+      connected: 'Linked to WhatsApp',
+      reconnecting: 'Connection lost — reconnecting'
+    };
+
+    function renderLinkPanel() {
+      const busy = linkState.state === 'starting' || linkState.state === 'reconnecting';
+
+      document.getElementById('link-spinner').hidden = !busy;
+      document.getElementById('link-headline').textContent =
+        LINK_HEADLINES[linkState.state] || LINK_HEADLINES.idle;
+
+      let detail = linkState.detail || '';
+      if (linkState.state === 'connected' && linkState.phoneNumber) {
+        detail = linkState.phoneNumber;
+      } else if (linkState.state === 'idle') {
+        detail = 'Start the bot to link a device.';
+      }
+      document.getElementById('link-detail').textContent = detail;
+
+      const qrBox = document.getElementById('link-qr');
+      const showQr = Boolean(linkState.qr) && !linkState.connected;
+      qrBox.hidden = !showQr;
+      if (showQr) document.getElementById('qr-image-home').src = linkState.qr;
+
+      // The badge in the card header follows the same state.
+      const badge = document.getElementById('connection-status-home');
+      if (badge) {
+        badge.className = 'connection-badge ' + (linkState.connected ? 'connected' : 'disconnected');
+        badge.querySelector('.status-text').textContent = linkState.connected
+          ? 'Connected'
+          : (linkState.state === 'awaiting_scan' ? 'Waiting for scan' : busy ? 'Connecting' : 'Disconnected');
       }
     }
 
+    function updateConnectionStatusHome(connected, phoneNumber, state, detail) {
+      linkState.connected = Boolean(connected);
+      linkState.state = state || (connected ? 'connected' : 'idle');
+      if (phoneNumber) linkState.phoneNumber = phoneNumber;
+      linkState.detail = detail || '';
+      // A live connection means the code on screen is spent.
+      if (connected) linkState.qr = null;
+      renderLinkPanel();
+    }
+
     function showQRCodeHome(qrImage) {
-      document.getElementById('qr-image-home').src = qrImage;
-      document.getElementById('qr-container-home').style.display = 'block';
-      document.getElementById('connected-info-home').style.display = 'none';
+      linkState.qr = qrImage;
+      linkState.connected = false;
+      linkState.state = 'awaiting_scan';
+      linkState.detail = '';
+      renderLinkPanel();
+    }
+
+    /*
+     * Ask over HTTP on load rather than waiting for the WebSocket. A QR that was
+     * broadcast before the page opened is otherwise invisible until it expires
+     * and a new one happens to be generated — which is what "the QR code never
+     * showed up" turned out to be.
+     */
+    async function loadConnectionState() {
+      try {
+        const res = await fetch('/api/connection');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.qr) linkState.qr = data.qr;
+        updateConnectionStatusHome(data.connected, data.phoneNumber, data.state, data.detail);
+      } catch (err) {
+        console.error('Failed to load connection state:', err);
+      }
     }
 
     // Bot Control Functions
@@ -1782,12 +3014,12 @@
       const stopBtn = document.getElementById('btn-stop-bot');
 
       if (enabled) {
-        statusText.textContent = '✅ Bot is currently ON (processing messages)';
+        statusText.textContent = 'Running — processing messages';
         statusText.style.color = 'var(--success)';
         startBtn.style.display = 'none';
         stopBtn.style.display = 'inline-flex';
       } else {
-        statusText.textContent = '⏸️ Bot is currently OFF (not processing messages)';
+        statusText.textContent = 'Stopped — not processing messages';
         statusText.style.color = 'var(--danger)';
         startBtn.style.display = 'inline-flex';
         stopBtn.style.display = 'none';
@@ -1835,9 +3067,9 @@
       select.value = mode;
 
       const modeLabels = {
-        'disabled': '🌍 Free Mode (Everyone can use)',
-        'whitelist': '✅ Whitelist Only (Restricted)',
-        'blacklist': '⛔ Blocking Blacklisted'
+        'disabled': 'Everyone',
+        'whitelist': 'Whitelist only',
+        'blacklist': 'Everyone except blacklist'
       };
 
       valueSpan.textContent = modeLabels[mode] || mode;
@@ -1894,9 +3126,9 @@
       select.value = mode;
 
       const modeLabels = {
-        'mention-only': '🏷️ Only When Tagged',
-        'contextual': '🤖 Smart/Contextual',
-        'all': '💬 Reply to All'
+        'mention-only': 'Only when tagged',
+        'contextual': 'Smart — it decides',
+        'all': 'Reply to every message'
       };
 
       valueSpan.textContent = modeLabels[mode] || mode;
@@ -1942,14 +3174,45 @@
       }
     }
 
+    // Current spend against the configured ceilings
+    async function loadBudget() {
+      const host = document.getElementById('budget-status');
+      if (!host) return;
+      try {
+        const res = await fetch('/api/budget');
+        const b = await res.json();
+        if (!b.dailyTokenLimit && !b.monthlyTokenLimit) {
+          host.textContent = 'No limits set. ' + b.tokensToday.toLocaleString() +
+            ' tokens used today across ' + b.callsToday.toLocaleString() + ' AI calls.';
+          return;
+        }
+        const cost = b.estimatedCostToday !== null
+          ? ' (~' + b.estimatedCostToday + ' ' + b.currency + ' today)' : '';
+        const pct = Math.round(b.utilisation * 100);
+        host.textContent =
+          b.tokensToday.toLocaleString() + ' tokens today' +
+          (b.dailyTokenLimit ? ' of ' + b.dailyTokenLimit.toLocaleString() : '') + '; ' +
+          b.tokensThisMonth.toLocaleString() + ' this month' +
+          (b.monthlyTokenLimit ? ' of ' + b.monthlyTokenLimit.toLocaleString() : '') +
+          cost + ' — ' + pct + '% of the tightest limit' +
+          (b.exceeded ? '. LIMIT REACHED: the bot is not calling the AI.' : '.');
+      } catch (e) {
+        host.textContent = 'Could not load usage.';
+      }
+    }
+
     // Initialize
     toggleProvider();
+    loadBudget();
     loadStats();
     loadBotStatus();
+    loadConnectionState();
     loadAccessControlMode();
     loadGroupResponseMode();
     setInterval(loadStats, 30000); // Refresh every 30s
     connectWebSocket(); // Connect to WebSocket for real-time logs
   </script>
+  <script src="/static/js/analytics.js"></script>
+  <script src="/static/js/admin-people.js"></script>
 </body>
 </html>

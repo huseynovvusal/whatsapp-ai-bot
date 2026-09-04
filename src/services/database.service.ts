@@ -1,9 +1,24 @@
-import Database from "better-sqlite3"
-import path from "path"
+import { Prisma } from "@prisma/client"
 import { config } from "@/config/env"
 import { createLogger } from "@/lib/logger"
+import { prisma } from "@/lib/prisma"
 
 const logger = createLogger(config.LOG_LEVEL, "DatabaseService")
+
+/**
+ * Data access for the bot, backed by PostgreSQL via Prisma.
+ *
+ * Two conventions worth knowing:
+ *
+ * - **Timestamps cross the boundary as plain numbers.** They are stored as
+ *   BigInt because epoch milliseconds overflow a 32-bit int, but every method
+ *   here converts to `number` on the way out and back on the way in. Callers —
+ *   and `JSON.stringify`, which throws on BigInt — never see a BigInt.
+ * - **Vectors are handled with raw SQL.** Prisma has no vector type, so
+ *   `knowledge_chunks.vector` is written and searched through `$queryRaw` using
+ *   pgvector's `<=>` cosine-distance operator. That pushes similarity search
+ *   into the database instead of scanning every row in JavaScript.
+ */
 
 export interface DbMessage {
   id?: number
@@ -51,383 +66,906 @@ export interface DbAnalytics {
   createdAt?: string
 }
 
+/** Epoch millis fit comfortably inside Number.MAX_SAFE_INTEGER. */
+const toNumber = (value: bigint | number | null | undefined): number =>
+  value === null || value === undefined ? 0 : Number(value)
+
+/** pgvector accepts its literal form as a string: "[0.1,0.2,...]". */
+const toVectorLiteral = (vector: number[]): string => `[${vector.join(",")}]`
+
+type MessageRow = {
+  id: number
+  chatId: string
+  sender: string
+  senderName: string
+  text: string
+  messageType: string
+  mediaUrl: string | null
+  timestamp: bigint
+  createdAt: Date
+}
+
+function mapMessage(row: MessageRow): DbMessage {
+  return {
+    id: row.id,
+    chatId: row.chatId,
+    sender: row.sender,
+    senderName: row.senderName,
+    text: row.text,
+    messageType: row.messageType as DbMessage["messageType"],
+    mediaUrl: row.mediaUrl || undefined,
+    timestamp: toNumber(row.timestamp),
+    createdAt: row.createdAt?.toISOString(),
+  }
+}
+
 export class DatabaseService {
-  private db: Database.Database
-
-  constructor() {
-    const dbPath = path.join(__dirname, "../../data/whatsapp-bot.db")
-
-    // Ensure data directory exists
-    const fs = require("fs")
-    const dataDir = path.dirname(dbPath)
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true })
-    }
-
-    this.db = new Database(dbPath)
-    this.db.pragma("journal_mode = WAL") // Better performance
-    this.initializeTables()
-    logger.info(`Database initialized at ${dbPath}`)
-  }
-
-  private initializeTables(): void {
-    // Messages table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chatId TEXT NOT NULL,
-        sender TEXT NOT NULL,
-        senderName TEXT NOT NULL,
-        text TEXT NOT NULL,
-        messageType TEXT DEFAULT 'text',
-        mediaUrl TEXT,
-        timestamp INTEGER NOT NULL,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_messages_chatId ON messages(chatId);
-      CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender);
-      CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
-    `)
-
-    // Users table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        phoneNumber TEXT UNIQUE NOT NULL,
-        displayName TEXT,
-        pushName TEXT,
-        lastSeen INTEGER NOT NULL,
-        messageCount INTEGER DEFAULT 0,
-        firstSeen INTEGER NOT NULL,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_users_phoneNumber ON users(phoneNumber);
-    `)
-
-    // Conversations table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS conversations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chatId TEXT UNIQUE NOT NULL,
-        chatName TEXT,
-        isGroup INTEGER DEFAULT 0,
-        messageCount INTEGER DEFAULT 0,
-        lastMessageAt INTEGER NOT NULL,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_conversations_chatId ON conversations(chatId);
-    `)
-
-    // Analytics table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS analytics (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date TEXT UNIQUE NOT NULL,
-        totalMessages INTEGER DEFAULT 0,
-        totalUsers INTEGER DEFAULT 0,
-        totalConversations INTEGER DEFAULT 0,
-        apiCalls INTEGER DEFAULT 0,
-        tokensUsed INTEGER DEFAULT 0,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_analytics_date ON analytics(date);
-    `)
-
-    // Access control tables
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS whitelist (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        identifier TEXT UNIQUE NOT NULL,
-        type TEXT NOT NULL,
-        name TEXT,
-        addedBy TEXT,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_whitelist_identifier ON whitelist(identifier);
-      CREATE INDEX IF NOT EXISTS idx_whitelist_type ON whitelist(type);
-    `)
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS blacklist (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        identifier TEXT UNIQUE NOT NULL,
-        type TEXT NOT NULL,
-        name TEXT,
-        reason TEXT,
-        addedBy TEXT,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_blacklist_identifier ON blacklist(identifier);
-      CREATE INDEX IF NOT EXISTS idx_blacklist_type ON blacklist(type);
-    `)
-
-    logger.info("Database tables initialized")
-  }
-
   // ============= MESSAGE OPERATIONS =============
 
-  public saveMessage(message: DbMessage): number {
-    const stmt = this.db.prepare(`
-      INSERT INTO messages (chatId, sender, senderName, text, messageType, mediaUrl, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
-    const result = stmt.run(
-      message.chatId,
-      message.sender,
-      message.senderName,
-      message.text,
-      message.messageType || "text",
-      message.mediaUrl || null,
-      message.timestamp
-    )
-    return result.lastInsertRowid as number
+  public async saveMessage(message: DbMessage): Promise<number> {
+    const created = await prisma.message.create({
+      data: {
+        chatId: message.chatId,
+        sender: message.sender,
+        senderName: message.senderName,
+        text: message.text,
+        messageType: message.messageType || "text",
+        mediaUrl: message.mediaUrl || null,
+        timestamp: BigInt(message.timestamp),
+      },
+      select: { id: true },
+    })
+    return created.id
   }
 
-  public getMessages(chatId: string, limit: number = 50): DbMessage[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM messages
-      WHERE chatId = ?
-      ORDER BY timestamp DESC
-      LIMIT ?
-    `)
-    return stmt.all(chatId, limit) as DbMessage[]
+  public async getMessages(chatId: string, limit: number = 50): Promise<DbMessage[]> {
+    const rows = await prisma.message.findMany({
+      where: { chatId },
+      orderBy: { timestamp: "desc" },
+      take: limit,
+    })
+    return rows.map(mapMessage)
   }
 
-  public getRecentMessages(chatId: string, windowMs: number): DbMessage[] {
-    const cutoff = Date.now() - windowMs
-    const stmt = this.db.prepare(`
-      SELECT * FROM messages
-      WHERE chatId = ? AND timestamp > ?
-      ORDER BY timestamp ASC
-    `)
-    return stmt.all(chatId, cutoff) as DbMessage[]
+  public async getRecentMessages(chatId: string, windowMs: number): Promise<DbMessage[]> {
+    const rows = await prisma.message.findMany({
+      where: { chatId, timestamp: { gt: BigInt(Date.now() - windowMs) } },
+      orderBy: { timestamp: "asc" },
+    })
+    return rows.map(mapMessage)
   }
 
-  public deleteMessagesByChat(chatId: string): number {
-    const stmt = this.db.prepare("DELETE FROM messages WHERE chatId = ?")
-    const result = stmt.run(chatId)
-    return result.changes
+  public async deleteMessagesByChat(chatId: string): Promise<number> {
+    const result = await prisma.message.deleteMany({ where: { chatId } })
+    return result.count
   }
 
-  public deleteAllMessages(): number {
-    const stmt = this.db.prepare("DELETE FROM messages")
-    const result = stmt.run()
-    return result.changes
+  public async deleteAllMessages(): Promise<number> {
+    const result = await prisma.message.deleteMany({})
+    return result.count
   }
 
-  public searchMessages(query: string, limit: number = 100): DbMessage[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM messages
-      WHERE text LIKE ?
-      ORDER BY timestamp DESC
-      LIMIT ?
-    `)
-    return stmt.all(`%${query}%`, limit) as DbMessage[]
+  public async searchMessages(query: string, limit: number = 100): Promise<DbMessage[]> {
+    const rows = await prisma.message.findMany({
+      // Case-insensitive substring search; Postgres can do this natively, which
+      // SQLite's LIKE could not without extra collation setup.
+      where: { text: { contains: query, mode: "insensitive" } },
+      orderBy: { timestamp: "desc" },
+      take: limit,
+    })
+    return rows.map(mapMessage)
+  }
+
+  public async getMessagesBySender(phoneNumber: string, limit: number = 20): Promise<DbMessage[]> {
+    const rows = await prisma.message.findMany({
+      where: { sender: phoneNumber },
+      orderBy: { timestamp: "desc" },
+      take: limit,
+    })
+    return rows.map(mapMessage)
   }
 
   // ============= USER OPERATIONS =============
 
-  public upsertUser(user: Omit<DbUser, "id" | "createdAt" | "updatedAt">): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO users (phoneNumber, displayName, pushName, lastSeen, messageCount, firstSeen)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(phoneNumber) DO UPDATE SET
-        displayName = COALESCE(excluded.displayName, displayName),
-        pushName = COALESCE(excluded.pushName, pushName),
-        lastSeen = excluded.lastSeen,
-        messageCount = messageCount + 1,
-        updatedAt = CURRENT_TIMESTAMP
-    `)
-    stmt.run(
-      user.phoneNumber,
-      user.displayName || null,
-      user.pushName || null,
-      user.lastSeen,
-      user.messageCount || 0,
-      user.firstSeen
+  public async upsertUser(user: Omit<DbUser, "id" | "createdAt" | "updatedAt">): Promise<void> {
+    await prisma.user.upsert({
+      where: { phoneNumber: user.phoneNumber },
+      create: {
+        phoneNumber: user.phoneNumber,
+        displayName: user.displayName || null,
+        pushName: user.pushName || null,
+        lastSeen: BigInt(user.lastSeen),
+        firstSeen: BigInt(user.firstSeen),
+        messageCount: user.messageCount || 0,
+      },
+      update: {
+        // COALESCE semantics: a missing name must not erase a known one.
+        ...(user.displayName ? { displayName: user.displayName } : {}),
+        ...(user.pushName ? { pushName: user.pushName } : {}),
+        lastSeen: BigInt(user.lastSeen),
+        messageCount: { increment: 1 },
+      },
+    })
+  }
+
+  public async getUser(phoneNumber: string): Promise<DbUser | undefined> {
+    const row = await prisma.user.findUnique({ where: { phoneNumber } })
+    if (!row) return undefined
+    return {
+      id: row.id,
+      phoneNumber: row.phoneNumber,
+      displayName: row.displayName || undefined,
+      pushName: row.pushName || undefined,
+      lastSeen: toNumber(row.lastSeen),
+      firstSeen: toNumber(row.firstSeen),
+      messageCount: row.messageCount,
+      createdAt: row.createdAt?.toISOString(),
+      updatedAt: row.updatedAt?.toISOString(),
+    }
+  }
+
+  public async getAllUsers(): Promise<DbUser[]> {
+    const rows = await prisma.user.findMany({ orderBy: { lastSeen: "desc" } })
+    return rows.map((row) => ({
+      id: row.id,
+      phoneNumber: row.phoneNumber,
+      displayName: row.displayName || undefined,
+      pushName: row.pushName || undefined,
+      lastSeen: toNumber(row.lastSeen),
+      firstSeen: toNumber(row.firstSeen),
+      messageCount: row.messageCount,
+    }))
+  }
+
+  /**
+   * Look up many users at once. Used where a per-row lookup would otherwise be
+   * an N+1 query (e.g. enriching a group's participant list).
+   */
+  public async getUsersByPhones(phoneNumbers: string[]): Promise<Map<string, DbUser>> {
+    if (!phoneNumbers.length) return new Map()
+    const rows = await prisma.user.findMany({
+      where: { phoneNumber: { in: phoneNumbers } },
+    })
+    return new Map(
+      rows.map((row) => [
+        row.phoneNumber,
+        {
+          id: row.id,
+          phoneNumber: row.phoneNumber,
+          displayName: row.displayName || undefined,
+          pushName: row.pushName || undefined,
+          lastSeen: toNumber(row.lastSeen),
+          firstSeen: toNumber(row.firstSeen),
+          messageCount: row.messageCount,
+        },
+      ])
     )
   }
 
-  public getUser(phoneNumber: string): DbUser | undefined {
-    const stmt = this.db.prepare("SELECT * FROM users WHERE phoneNumber = ?")
-    return stmt.get(phoneNumber) as DbUser | undefined
+  public async getUserStats(): Promise<{ total: number; active: number }> {
+    const [total, active] = await Promise.all([
+      prisma.user.count(),
+      prisma.user.count({ where: { lastSeen: { gt: BigInt(Date.now() - 24 * 60 * 60 * 1000) } } }),
+    ])
+    return { total, active }
   }
 
-  public getAllUsers(): DbUser[] {
-    const stmt = this.db.prepare("SELECT * FROM users ORDER BY lastSeen DESC")
-    return stmt.all() as DbUser[]
+  /**
+   * Everyone the bot knows about, joined with real message activity.
+   * `users.messageCount` is maintained by upserts and can drift, so counts come
+   * from the messages table.
+   */
+  public async getUserDirectory(): Promise<
+    Array<{
+      phoneNumber: string
+      displayName: string | null
+      pushName: string | null
+      firstSeen: number
+      lastSeen: number
+      messageCount: number
+      chatCount: number
+    }>
+  > {
+    const rows = await prisma.$queryRaw<
+      Array<{
+        phoneNumber: string
+        displayName: string | null
+        pushName: string | null
+        firstSeen: bigint
+        lastSeen: bigint
+        messageCount: bigint
+        chatCount: bigint
+      }>
+    >`
+      SELECT u."phoneNumber", u."displayName", u."pushName", u."firstSeen", u."lastSeen",
+             COALESCE(m."messageCount", 0) AS "messageCount",
+             COALESCE(m."chatCount", 0) AS "chatCount"
+      FROM users u
+      LEFT JOIN (
+        SELECT sender, COUNT(*) AS "messageCount", COUNT(DISTINCT "chatId") AS "chatCount"
+        FROM messages WHERE sender <> 'Bot' GROUP BY sender
+      ) m ON m.sender = u."phoneNumber"
+      ORDER BY u."lastSeen" DESC
+    `
+    return rows.map((r) => ({
+      phoneNumber: r.phoneNumber,
+      displayName: r.displayName,
+      pushName: r.pushName,
+      firstSeen: toNumber(r.firstSeen),
+      lastSeen: toNumber(r.lastSeen),
+      messageCount: toNumber(r.messageCount),
+      chatCount: toNumber(r.chatCount),
+    }))
   }
 
-  public getUserStats(): { total: number; active: number } {
-    const total = this.db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
-    const active = this.db.prepare("SELECT COUNT(*) as count FROM users WHERE lastSeen > ?").get(oneDayAgo) as { count: number }
-    return { total: total.count, active: active.count }
+  /** Which chats a person appears in, and how active they are in each. */
+  public async getUserActivity(phoneNumber: string): Promise<{
+    totalMessages: number
+    firstMessage: number | null
+    lastMessage: number | null
+    chats: Array<{ chatId: string; chatName: string | null; isGroup: boolean; count: number }>
+  }> {
+    const totals = await prisma.message.aggregate({
+      where: { sender: phoneNumber },
+      _count: { _all: true },
+      _min: { timestamp: true },
+      _max: { timestamp: true },
+    })
+
+    const chats = await prisma.$queryRaw<
+      Array<{ chatId: string; chatName: string | null; count: bigint }>
+    >`
+      SELECT m."chatId", c."chatName", COUNT(*) AS count
+      FROM messages m
+      LEFT JOIN conversations c ON c."chatId" = m."chatId"
+      WHERE m.sender = ${phoneNumber}
+      GROUP BY m."chatId", c."chatName"
+      ORDER BY count DESC
+    `
+
+    return {
+      totalMessages: totals._count._all,
+      firstMessage: totals._min.timestamp ? toNumber(totals._min.timestamp) : null,
+      lastMessage: totals._max.timestamp ? toNumber(totals._max.timestamp) : null,
+      chats: chats.map((c) => ({
+        chatId: c.chatId,
+        chatName: c.chatName,
+        isGroup: c.chatId.endsWith("@g.us"),
+        count: toNumber(c.count),
+      })),
+    }
+  }
+
+  /** Distinct senders seen in a chat, with per-chat activity. */
+  public async getChatParticipants(chatId: string): Promise<
+    Array<{ sender: string; senderName: string; count: number; lastMessageAt: number }>
+  > {
+    const rows = await prisma.$queryRaw<
+      Array<{ sender: string; senderName: string; count: bigint; lastMessageAt: bigint }>
+    >`
+      SELECT sender, MAX("senderName") AS "senderName", COUNT(*) AS count,
+             MAX(timestamp) AS "lastMessageAt"
+      FROM messages
+      WHERE "chatId" = ${chatId} AND sender <> 'Bot'
+      GROUP BY sender
+      ORDER BY count DESC
+    `
+    return rows.map((r) => ({
+      sender: r.sender,
+      senderName: r.senderName,
+      count: toNumber(r.count),
+      lastMessageAt: toNumber(r.lastMessageAt),
+    }))
   }
 
   // ============= CONVERSATION OPERATIONS =============
 
-  public upsertConversation(conv: Omit<DbConversation, "id" | "createdAt" | "updatedAt">): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO conversations (chatId, chatName, isGroup, messageCount, lastMessageAt)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(chatId) DO UPDATE SET
-        chatName = COALESCE(excluded.chatName, chatName),
-        messageCount = messageCount + 1,
-        lastMessageAt = excluded.lastMessageAt,
-        updatedAt = CURRENT_TIMESTAMP
-    `)
-    stmt.run(
-      conv.chatId,
-      conv.chatName || null,
-      conv.isGroup ? 1 : 0,
-      conv.messageCount || 0,
-      conv.lastMessageAt
-    )
+  public async upsertConversation(
+    conv: Omit<DbConversation, "id" | "createdAt" | "updatedAt">
+  ): Promise<void> {
+    await prisma.conversation.upsert({
+      where: { chatId: conv.chatId },
+      create: {
+        chatId: conv.chatId,
+        chatName: conv.chatName || null,
+        isGroup: Boolean(conv.isGroup),
+        messageCount: conv.messageCount || 0,
+        lastMessageAt: BigInt(conv.lastMessageAt),
+      },
+      update: {
+        ...(conv.chatName ? { chatName: conv.chatName } : {}),
+        messageCount: { increment: 1 },
+        lastMessageAt: BigInt(conv.lastMessageAt),
+      },
+    })
   }
 
-  public getConversation(chatId: string): DbConversation | undefined {
-    const stmt = this.db.prepare("SELECT * FROM conversations WHERE chatId = ?")
-    return stmt.get(chatId) as DbConversation | undefined
+  public async getConversation(chatId: string): Promise<DbConversation | undefined> {
+    const row = await prisma.conversation.findUnique({ where: { chatId } })
+    if (!row) return undefined
+    return {
+      id: row.id,
+      chatId: row.chatId,
+      chatName: row.chatName || undefined,
+      isGroup: row.isGroup,
+      messageCount: row.messageCount,
+      lastMessageAt: toNumber(row.lastMessageAt),
+    }
   }
 
-  public getAllConversations(): DbConversation[] {
-    const stmt = this.db.prepare("SELECT * FROM conversations ORDER BY lastMessageAt DESC")
-    return stmt.all() as DbConversation[]
+  public async getAllConversations(): Promise<DbConversation[]> {
+    const rows = await prisma.conversation.findMany({ orderBy: { lastMessageAt: "desc" } })
+    return rows.map((row) => ({
+      id: row.id,
+      chatId: row.chatId,
+      chatName: row.chatName || undefined,
+      isGroup: row.isGroup,
+      messageCount: row.messageCount,
+      lastMessageAt: toNumber(row.lastMessageAt),
+    }))
   }
 
   // ============= ANALYTICS OPERATIONS =============
 
-  public updateAnalytics(date: string, updates: Partial<DbAnalytics>): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO analytics (date, totalMessages, totalUsers, totalConversations, apiCalls, tokensUsed)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(date) DO UPDATE SET
-        totalMessages = totalMessages + ?,
-        totalUsers = COALESCE(excluded.totalUsers, totalUsers),
-        totalConversations = COALESCE(excluded.totalConversations, totalConversations),
-        apiCalls = apiCalls + ?,
-        tokensUsed = tokensUsed + ?
-    `)
-    stmt.run(
-      date,
-      updates.totalMessages || 0,
-      updates.totalUsers || 0,
-      updates.totalConversations || 0,
-      updates.apiCalls || 0,
-      updates.tokensUsed || 0,
-      updates.totalMessages || 0,
-      updates.apiCalls || 0,
-      updates.tokensUsed || 0
+  /**
+   * Accumulate counters for a date.
+   *
+   * `totalMessages`/`apiCalls`/`tokensUsed` add to what is there. `totalUsers`
+   * and `totalConversations` are snapshots, only written when a value is
+   * supplied — passing nothing leaves the stored value alone.
+   */
+  public async updateAnalytics(date: string, updates: Partial<DbAnalytics>): Promise<void> {
+    const messages = updates.totalMessages ?? 0
+    const apiCalls = updates.apiCalls ?? 0
+    const tokens = updates.tokensUsed ?? 0
+    const users = updates.totalUsers ?? null
+    const conversations = updates.totalConversations ?? null
+
+    await prisma.$executeRaw`
+      INSERT INTO analytics (date, "totalMessages", "totalUsers", "totalConversations", "apiCalls", "tokensUsed")
+      VALUES (${date}, ${messages}, COALESCE(${users}::int, 0), COALESCE(${conversations}::int, 0), ${apiCalls}, ${tokens})
+      ON CONFLICT (date) DO UPDATE SET
+        "totalMessages" = analytics."totalMessages" + ${messages},
+        "totalUsers" = COALESCE(${users}::int, analytics."totalUsers"),
+        "totalConversations" = COALESCE(${conversations}::int, analytics."totalConversations"),
+        "apiCalls" = analytics."apiCalls" + ${apiCalls},
+        "tokensUsed" = analytics."tokensUsed" + ${tokens}
+    `
+  }
+
+  public async getAnalytics(startDate: string, endDate: string): Promise<DbAnalytics[]> {
+    const rows = await prisma.analytics.findMany({
+      where: { date: { gte: startDate, lte: endDate } },
+      orderBy: { date: "desc" },
+    })
+    return rows.map((row) => ({
+      id: row.id,
+      date: row.date,
+      totalMessages: row.totalMessages,
+      totalUsers: row.totalUsers,
+      totalConversations: row.totalConversations,
+      apiCalls: row.apiCalls,
+      tokensUsed: row.tokensUsed,
+      createdAt: row.createdAt?.toISOString(),
+    }))
+  }
+
+  public async getTodayStats(): Promise<DbAnalytics | undefined> {
+    const today = new Date().toISOString().split("T")[0]
+    const row = await prisma.analytics.findUnique({ where: { date: today } })
+    if (!row) return undefined
+    return {
+      id: row.id,
+      date: row.date,
+      totalMessages: row.totalMessages,
+      totalUsers: row.totalUsers,
+      totalConversations: row.totalConversations,
+      apiCalls: row.apiCalls,
+      tokensUsed: row.tokensUsed,
+    }
+  }
+
+  /** Most active senders in a window. The bot's own messages are excluded. */
+  public async getTopUsers(
+    since: number,
+    limit: number = 8
+  ): Promise<Array<{ sender: string; senderName: string; count: number }>> {
+    const rows = await prisma.$queryRaw<
+      Array<{ sender: string; senderName: string; count: bigint }>
+    >`
+      SELECT sender, MAX("senderName") AS "senderName", COUNT(*) AS count
+      FROM messages
+      WHERE timestamp >= ${BigInt(since)} AND sender <> 'Bot'
+      GROUP BY sender
+      ORDER BY count DESC
+      LIMIT ${limit}
+    `
+    return rows.map((r) => ({
+      sender: r.sender,
+      senderName: r.senderName,
+      count: toNumber(r.count),
+    }))
+  }
+
+  public async getTopConversations(
+    since: number,
+    limit: number = 8
+  ): Promise<Array<{ chatId: string; chatName: string | null; isGroup: boolean; count: number }>> {
+    const rows = await prisma.$queryRaw<
+      Array<{ chatId: string; chatName: string | null; count: bigint }>
+    >`
+      SELECT m."chatId", MAX(c."chatName") AS "chatName", COUNT(*) AS count
+      FROM messages m
+      LEFT JOIN conversations c ON c."chatId" = m."chatId"
+      WHERE m.timestamp >= ${BigInt(since)}
+      GROUP BY m."chatId"
+      ORDER BY count DESC
+      LIMIT ${limit}
+    `
+    return rows.map((r) => ({
+      chatId: r.chatId,
+      chatName: r.chatName,
+      isGroup: r.chatId.endsWith("@g.us"),
+      count: toNumber(r.count),
+    }))
+  }
+
+  /**
+   * Message volume by hour of day (0-23, server local time). Always returns all
+   * 24 buckets so the chart has a stable x-axis.
+   */
+  public async getHourlyActivity(since: number): Promise<Array<{ hour: number; count: number }>> {
+    const rows = await prisma.$queryRaw<Array<{ hour: number; count: bigint }>>`
+      SELECT EXTRACT(HOUR FROM to_timestamp(timestamp / 1000.0))::int AS hour, COUNT(*) AS count
+      FROM messages
+      WHERE timestamp >= ${BigInt(since)}
+      GROUP BY hour
+    `
+    const buckets = new Map(rows.map((r) => [Number(r.hour), toNumber(r.count)]))
+    return Array.from({ length: 24 }, (_, hour) => ({ hour, count: buckets.get(hour) || 0 }))
+  }
+
+  /** Headline totals for a window, computed from messages so they stay consistent. */
+  public async getRangeTotals(
+    since: number,
+    until: number = Date.now()
+  ): Promise<{ messages: number; botMessages: number; activeUsers: number; activeChats: number }> {
+    const [row] = await prisma.$queryRaw<
+      Array<{
+        messages: bigint
+        botmessages: bigint
+        activeusers: bigint
+        activechats: bigint
+      }>
+    >`
+      SELECT COUNT(*) AS messages,
+             COUNT(*) FILTER (WHERE sender = 'Bot') AS botMessages,
+             COUNT(DISTINCT sender) FILTER (WHERE sender <> 'Bot') AS activeUsers,
+             COUNT(DISTINCT "chatId") AS activeChats
+      FROM messages
+      WHERE timestamp >= ${BigInt(since)} AND timestamp <= ${BigInt(until)}
+    `
+    return {
+      messages: toNumber(row?.messages),
+      botMessages: toNumber(row?.botmessages),
+      activeUsers: toNumber(row?.activeusers),
+      activeChats: toNumber(row?.activechats),
+    }
+  }
+
+  // ============= ACCESS CONTROL =============
+
+  private async addToList(
+    list: "whitelist" | "blacklist",
+    identifier: string,
+    type: "contact" | "group",
+    name?: string,
+    reason?: string,
+    addedBy?: string
+  ): Promise<void> {
+    await prisma.accessListEntry.upsert({
+      where: { list_identifier: { list, identifier } },
+      create: {
+        list,
+        identifier,
+        type,
+        name: name || null,
+        reason: reason || null,
+        addedBy: addedBy || null,
+      },
+      update: { type, name: name || null, reason: reason || null, addedBy: addedBy || null },
+    })
+  }
+
+  public async addToWhitelist(
+    identifier: string,
+    type: "contact" | "group",
+    name?: string,
+    addedBy?: string
+  ): Promise<void> {
+    await this.addToList("whitelist", identifier, type, name, undefined, addedBy)
+  }
+
+  public async removeFromWhitelist(identifier: string): Promise<void> {
+    await prisma.accessListEntry.deleteMany({ where: { list: "whitelist", identifier } })
+  }
+
+  public async getWhitelist(): Promise<
+    Array<{ identifier: string; type: string; name?: string; createdAt: string }>
+  > {
+    const rows = await prisma.accessListEntry.findMany({
+      where: { list: "whitelist" },
+      orderBy: { createdAt: "desc" },
+    })
+    return rows.map((r) => ({
+      identifier: r.identifier,
+      type: r.type,
+      name: r.name || undefined,
+      createdAt: r.createdAt.toISOString(),
+    }))
+  }
+
+  public async isWhitelisted(identifier: string): Promise<boolean> {
+    const count = await prisma.accessListEntry.count({
+      where: { list: "whitelist", identifier },
+    })
+    return count > 0
+  }
+
+  public async addToBlacklist(
+    identifier: string,
+    type: "contact" | "group",
+    name?: string,
+    reason?: string,
+    addedBy?: string
+  ): Promise<void> {
+    await this.addToList("blacklist", identifier, type, name, reason, addedBy)
+  }
+
+  public async removeFromBlacklist(identifier: string): Promise<void> {
+    await prisma.accessListEntry.deleteMany({ where: { list: "blacklist", identifier } })
+  }
+
+  public async getBlacklist(): Promise<
+    Array<{ identifier: string; type: string; name?: string; reason?: string; createdAt: string }>
+  > {
+    const rows = await prisma.accessListEntry.findMany({
+      where: { list: "blacklist" },
+      orderBy: { createdAt: "desc" },
+    })
+    return rows.map((r) => ({
+      identifier: r.identifier,
+      type: r.type,
+      name: r.name || undefined,
+      reason: r.reason || undefined,
+      createdAt: r.createdAt.toISOString(),
+    }))
+  }
+
+  public async isBlacklisted(identifier: string): Promise<boolean> {
+    const count = await prisma.accessListEntry.count({
+      where: { list: "blacklist", identifier },
+    })
+    return count > 0
+  }
+
+  // ============= KNOWLEDGE BASE (RAG) =============
+
+  public async getMessagesAfter(
+    chatId: string,
+    after: number,
+    limit: number = 2000
+  ): Promise<DbMessage[]> {
+    const rows = await prisma.message.findMany({
+      where: { chatId, timestamp: { gt: BigInt(after) } },
+      orderBy: { timestamp: "asc" },
+      take: limit,
+    })
+    return rows.map(mapMessage)
+  }
+
+  public async getIndexableChatIds(): Promise<string[]> {
+    const rows = await prisma.message.findMany({
+      distinct: ["chatId"],
+      select: { chatId: true },
+    })
+    return rows.map((r) => r.chatId)
+  }
+
+  public async getLastIndexedTimestamp(chatId: string): Promise<number> {
+    const row = await prisma.knowledgeState.findUnique({ where: { chatId } })
+    return toNumber(row?.lastIndexedTimestamp)
+  }
+
+  public async setLastIndexedTimestamp(chatId: string, timestamp: number): Promise<void> {
+    await prisma.knowledgeState.upsert({
+      where: { chatId },
+      create: { chatId, lastIndexedTimestamp: BigInt(timestamp) },
+      update: { lastIndexedTimestamp: BigInt(timestamp) },
+    })
+  }
+
+  /**
+   * Insert embedded chunks. Written with raw SQL because the vector column has
+   * no Prisma type; one statement per chunk inside a transaction.
+   */
+  public async insertKnowledgeChunks(
+    chunks: Array<{
+      chatId: string
+      chatName?: string
+      isGroup: boolean
+      text: string
+      startTimestamp: number
+      endTimestamp: number
+      messageCount: number
+      model: string
+      vector: number[]
+    }>
+  ): Promise<void> {
+    if (!chunks.length) return
+
+    await prisma.$transaction(
+      chunks.map(
+        (chunk) => prisma.$executeRaw`
+          INSERT INTO knowledge_chunks
+            ("chatId", "chatName", "isGroup", text, "startTimestamp", "endTimestamp",
+             "messageCount", model, dim, vector)
+          VALUES (
+            ${chunk.chatId},
+            ${chunk.chatName || null},
+            ${chunk.isGroup},
+            ${chunk.text},
+            ${BigInt(chunk.startTimestamp)},
+            ${BigInt(chunk.endTimestamp)},
+            ${chunk.messageCount},
+            ${chunk.model},
+            ${chunk.vector.length},
+            ${toVectorLiteral(chunk.vector)}::vector
+          )
+        `
+      )
     )
   }
 
-  public getAnalytics(startDate: string, endDate: string): DbAnalytics[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM analytics
-      WHERE date BETWEEN ? AND ?
-      ORDER BY date DESC
-    `)
-    return stmt.all(startDate, endDate) as DbAnalytics[]
+  /**
+   * Nearest chunks to `queryVector`, ranked by pgvector cosine distance.
+   *
+   * Vectors are stored L2-normalised, so cosine similarity is `1 - distance`,
+   * which keeps the score identical in meaning to the previous dot-product
+   * implementation — but computed in Postgres rather than by scanning every row
+   * in JavaScript. `dim` is filtered so vectors from different embedding models
+   * are never compared.
+   */
+  public async searchKnowledgeChunks(
+    queryVector: number[],
+    options: { chatId?: string; model: string; limit?: number; minScore?: number } = {
+      model: "",
+    }
+  ): Promise<
+    Array<{
+      id: number
+      chatId: string
+      chatName: string | null
+      text: string
+      startTimestamp: number
+      endTimestamp: number
+      messageCount: number
+      score: number
+    }>
+  > {
+    const limit = options.limit || 5
+    const minScore = options.minScore === undefined ? 0 : options.minScore
+    // score = 1 - distance, so the score floor becomes a distance ceiling.
+    const maxDistance = 1 - minScore
+    const literal = toVectorLiteral(queryVector)
+
+    const where = [
+      Prisma.sql`model = ${options.model}`,
+      Prisma.sql`dim = ${queryVector.length}`,
+      Prisma.sql`vector IS NOT NULL`,
+    ]
+    if (options.chatId) where.push(Prisma.sql`"chatId" = ${options.chatId}`)
+
+    const rows = await prisma.$queryRaw<
+      Array<{
+        id: number
+        chatId: string
+        chatName: string | null
+        text: string
+        startTimestamp: bigint
+        endTimestamp: bigint
+        messageCount: number
+        distance: number
+      }>
+    >`
+      SELECT id, "chatId", "chatName", text, "startTimestamp", "endTimestamp", "messageCount",
+             (vector <=> ${literal}::vector) AS distance
+      FROM knowledge_chunks
+      WHERE ${Prisma.join(where, " AND ")}
+        AND (vector <=> ${literal}::vector) <= ${maxDistance}
+      ORDER BY distance ASC
+      LIMIT ${limit}
+    `
+
+    return rows.map((r) => ({
+      id: r.id,
+      chatId: r.chatId,
+      chatName: r.chatName,
+      text: r.text,
+      startTimestamp: toNumber(r.startTimestamp),
+      endTimestamp: toNumber(r.endTimestamp),
+      messageCount: r.messageCount,
+      score: 1 - Number(r.distance),
+    }))
   }
 
-  public getTodayStats(): DbAnalytics | undefined {
-    const today = new Date().toISOString().split("T")[0]
-    const stmt = this.db.prepare("SELECT * FROM analytics WHERE date = ?")
-    return stmt.get(today) as DbAnalytics | undefined
+  public async getKnowledgeStats(): Promise<{
+    chunks: number
+    chats: number
+    models: string[]
+    oldest: number | null
+    newest: number | null
+  }> {
+    const aggregate = await prisma.knowledgeChunk.aggregate({
+      _count: { _all: true },
+      _min: { startTimestamp: true },
+      _max: { endTimestamp: true },
+    })
+    const [chats, models] = await Promise.all([
+      prisma.knowledgeChunk.findMany({ distinct: ["chatId"], select: { chatId: true } }),
+      prisma.knowledgeChunk.findMany({ distinct: ["model"], select: { model: true } }),
+    ])
+    return {
+      chunks: aggregate._count._all,
+      chats: chats.length,
+      models: models.map((m) => m.model),
+      oldest: aggregate._min.startTimestamp ? toNumber(aggregate._min.startTimestamp) : null,
+      newest: aggregate._max.endTimestamp ? toNumber(aggregate._max.endTimestamp) : null,
+    }
   }
 
-  // ============= ACCESS CONTROL OPERATIONS =============
-
-  public addToWhitelist(identifier: string, type: "contact" | "group", name?: string, addedBy?: string): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO whitelist (identifier, type, name, addedBy)
-      VALUES (?, ?, ?, ?)
-    `)
-    stmt.run(identifier, type, name, addedBy)
+  public async getKnowledgeChunkCount(chatId: string): Promise<number> {
+    return prisma.knowledgeChunk.count({ where: { chatId } })
   }
 
-  public removeFromWhitelist(identifier: string): void {
-    const stmt = this.db.prepare("DELETE FROM whitelist WHERE identifier = ?")
-    stmt.run(identifier)
+  /** Clear the knowledge base (optionally for one chat) and reset watermarks. */
+  public async clearKnowledge(chatId?: string): Promise<number> {
+    if (chatId) {
+      const [removed] = await prisma.$transaction([
+        prisma.knowledgeChunk.deleteMany({ where: { chatId } }),
+        prisma.knowledgeState.deleteMany({ where: { chatId } }),
+      ])
+      return removed.count
+    }
+    const [removed] = await prisma.$transaction([
+      prisma.knowledgeChunk.deleteMany({}),
+      prisma.knowledgeState.deleteMany({}),
+    ])
+    return removed.count
   }
 
-  public getWhitelist(): Array<{ identifier: string; type: string; name?: string; createdAt: string }> {
-    const stmt = this.db.prepare("SELECT identifier, type, name, createdAt FROM whitelist ORDER BY createdAt DESC")
-    return stmt.all() as Array<{ identifier: string; type: string; name?: string; createdAt: string }>
+  // ============= PER-CHAT SETTINGS =============
+
+  public async getChatPersona(chatId: string): Promise<"assistant" | "companion" | null> {
+    const row = await prisma.chatSetting.findUnique({ where: { chatId } })
+    const value = row?.persona
+    return value === "assistant" || value === "companion" ? value : null
   }
 
-  public isWhitelisted(identifier: string): boolean {
-    const stmt = this.db.prepare("SELECT COUNT(*) as count FROM whitelist WHERE identifier = ?")
-    const result = stmt.get(identifier) as { count: number }
-    return result.count > 0
+  public async setChatPersona(chatId: string, persona: "assistant" | "companion"): Promise<void> {
+    await prisma.chatSetting.upsert({
+      where: { chatId },
+      create: { chatId, persona },
+      update: { persona },
+    })
   }
 
-  public addToBlacklist(identifier: string, type: "contact" | "group", name?: string, reason?: string, addedBy?: string): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO blacklist (identifier, type, name, reason, addedBy)
-      VALUES (?, ?, ?, ?, ?)
-    `)
-    stmt.run(identifier, type, name, reason, addedBy)
+  public async clearChatPersona(chatId: string): Promise<void> {
+    // Null the column rather than deleting the row: the row may also carry a
+    // chattiness override, which clearing the persona should not discard.
+    await prisma.chatSetting.updateMany({ where: { chatId }, data: { persona: null } })
   }
 
-  public removeFromBlacklist(identifier: string): void {
-    const stmt = this.db.prepare("DELETE FROM blacklist WHERE identifier = ?")
-    stmt.run(identifier)
+  public async setChatChattiness(chatId: string, chattiness: string | null): Promise<void> {
+    await prisma.chatSetting.upsert({
+      where: { chatId },
+      create: { chatId, chattiness },
+      update: { chattiness },
+    })
   }
 
-  public getBlacklist(): Array<{ identifier: string; type: string; name?: string; reason?: string; createdAt: string }> {
-    const stmt = this.db.prepare("SELECT identifier, type, name, reason, createdAt FROM blacklist ORDER BY createdAt DESC")
-    return stmt.all() as Array<{ identifier: string; type: string; name?: string; reason?: string; createdAt: string }>
+  public async getChatChattinessOverrides(): Promise<Record<string, string>> {
+    const rows = await prisma.chatSetting.findMany({ where: { chattiness: { not: null } } })
+    const out: Record<string, string> = {}
+    for (const row of rows) if (row.chattiness) out[row.chatId] = row.chattiness
+    return out
   }
 
-  public isBlacklisted(identifier: string): boolean {
-    const stmt = this.db.prepare("SELECT COUNT(*) as count FROM blacklist WHERE identifier = ?")
-    const result = stmt.get(identifier) as { count: number }
-    return result.count > 0
+  public async getChatPersonaOverrides(): Promise<Record<string, string>> {
+    const rows = await prisma.chatSetting.findMany({ where: { persona: { not: null } } })
+    const out: Record<string, string> = {}
+    for (const row of rows) if (row.persona) out[row.chatId] = row.persona
+    return out
   }
 
-  // ============= UTILITY OPERATIONS =============
+  // ============= PER-CHAT NOTES (the bot's MEMORY.md) =============
 
-  public close(): void {
-    this.db.close()
-    logger.info("Database connection closed")
+  public async getChatNotes(chatId: string): Promise<{
+    notes: string | null
+    updatedAt: number | null
+    messagesSince: number
+  }> {
+    const row = await prisma.chatSetting.findUnique({ where: { chatId } })
+    return {
+      notes: row?.notes ?? null,
+      updatedAt: row?.notesUpdatedAt ? row.notesUpdatedAt.getTime() : null,
+      messagesSince: row?.notesMessagesSince ?? 0,
+    }
   }
 
-  public backup(backupPath: string): void {
-    this.db.backup(backupPath)
-    logger.info(`Database backed up to ${backupPath}`)
+  /** Replace a chat's notes and reset the "messages since" counter. */
+  public async setChatNotes(chatId: string, notes: string | null): Promise<void> {
+    const data = {
+      notes,
+      notesUpdatedAt: notes ? new Date() : null,
+      notesMessagesSince: 0,
+    }
+    await prisma.chatSetting.upsert({
+      where: { chatId },
+      create: { chatId, ...data },
+      update: data,
+    })
   }
 
-  public getStats(): {
+  /**
+   * Count one more message towards the next notes refresh, returning the new
+   * total. Upsert rather than update so a chat with no settings row still
+   * accumulates a count.
+   */
+  public async bumpChatNotesCounter(chatId: string): Promise<number> {
+    const row = await prisma.chatSetting.upsert({
+      where: { chatId },
+      create: { chatId, notesMessagesSince: 1 },
+      update: { notesMessagesSince: { increment: 1 } },
+      select: { notesMessagesSince: true },
+    })
+    return row.notesMessagesSince
+  }
+
+  /** Every chat that currently has notes, for the admin UI listing. */
+  public async listChatNotes(): Promise<
+    Array<{ chatId: string; notes: string; updatedAt: number | null }>
+  > {
+    const rows = await prisma.chatSetting.findMany({
+      where: { notes: { not: null } },
+      orderBy: { notesUpdatedAt: "desc" },
+    })
+    return rows.map((row) => ({
+      chatId: row.chatId,
+      notes: row.notes as string,
+      updatedAt: row.notesUpdatedAt ? row.notesUpdatedAt.getTime() : null,
+    }))
+  }
+
+  // ============= UTILITY =============
+
+  public async getStats(): Promise<{
     totalMessages: number
     totalUsers: number
     totalConversations: number
-  } {
-    const messages = this.db.prepare("SELECT COUNT(*) as count FROM messages").get() as { count: number }
-    const users = this.db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }
-    const conversations = this.db.prepare("SELECT COUNT(*) as count FROM conversations").get() as { count: number }
+  }> {
+    const [totalMessages, totalUsers, totalConversations] = await Promise.all([
+      prisma.message.count(),
+      prisma.user.count(),
+      prisma.conversation.count(),
+    ])
+    return { totalMessages, totalUsers, totalConversations }
+  }
 
-    return {
-      totalMessages: messages.count,
-      totalUsers: users.count,
-      totalConversations: conversations.count,
-    }
+  public async close(): Promise<void> {
+    await prisma.$disconnect()
+    logger.info("Database connection closed")
   }
 }
 
-// Singleton instance
 export const databaseService = new DatabaseService()
-
-// Graceful shutdown
-process.on("exit", () => {
-  databaseService.close()
-})

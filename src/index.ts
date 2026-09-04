@@ -6,12 +6,21 @@ import { createLogger } from "@/lib/logger"
 import { whatsappService } from "@/services/whatsapp.service"
 import { messageHandler } from "@/handlers/message.handler"
 import { wsService } from "@/services/websocket.service"
+import { ragService } from "@/services/rag.service"
+import { personaService } from "@/services/persona.service"
+import { connectDatabase, disconnectDatabase } from "@/lib/prisma"
 
 const logger = createLogger(config.LOG_LEVEL, "Main")
 
 async function main() {
   try {
     logger.info("🚀 Starting WhatsApp Group AI Bot...")
+
+    // Fail fast on a bad DATABASE_URL rather than on the first message.
+    await connectDatabase()
+    // Personality overrides are read synchronously on the hot path, so the
+    // cache is warmed before any message can arrive.
+    await personaService.load()
 
     // Start Express server + Views
     const app = express()
@@ -20,6 +29,16 @@ async function main() {
     app.use("/static", express.static("public"))
     app.use(express.json())
     app.use(express.urlencoded({ extended: true }))
+
+    // A predictable session secret lets anyone forge an admin cookie, so the
+    // default is refused in production rather than used silently.
+    if (!process.env.SESSION_SECRET) {
+      const msg = "SESSION_SECRET is not set — admin sessions can be forged."
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(`${msg} Refusing to start in production.`)
+      }
+      logger.warn(`⚠️  ${msg} Set it before deploying.`)
+    }
 
     // Session middleware for authentication
     app.use(
@@ -61,6 +80,10 @@ async function main() {
       logger.warn("Admin UI router not loaded", err)
     }
 
+    // Keep the knowledge base current in the background so the bot can recall
+    // older conversations (see src/services/rag.service.ts)
+    ragService.startBackgroundIndexing()
+
     // Set up message handler
     whatsappService.onMessage(async (info) => {
       await messageHandler.handle(info)
@@ -77,15 +100,18 @@ async function main() {
 }
 
 // Handle graceful shutdown
-process.on("SIGINT", () => {
-  logger.info("Received SIGINT. Shutting down gracefully...")
+async function shutdown(signal: string): Promise<void> {
+  logger.info(`Received ${signal}. Shutting down gracefully...`)
+  try {
+    await disconnectDatabase()
+  } catch (err) {
+    logger.warn("Error closing the database connection", err)
+  }
   process.exit(0)
-})
+}
 
-process.on("SIGTERM", () => {
-  logger.info("Received SIGTERM. Shutting down gracefully...")
-  process.exit(0)
-})
+process.on("SIGINT", () => void shutdown("SIGINT"))
+process.on("SIGTERM", () => void shutdown("SIGTERM"))
 
 // Start the bot
 main()

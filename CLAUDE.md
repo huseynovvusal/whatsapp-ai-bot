@@ -18,6 +18,12 @@ npm run start
 # Build TypeScript to JavaScript
 npm run build
 
+# Seed the database with demo data (see "Fixtures / demo data" below)
+npm run seed
+npm run seed -- --days 30   # shorter window
+npm run seed -- --reset     # wipe demo data, then re-seed
+npm run seed -- --clean     # wipe demo data and exit
+
 # Format code
 npm run prettier
 
@@ -44,7 +50,7 @@ All major services are singleton instances created at module level:
 - **llmService** (`src/services/llm.service.ts`) - Abstracts AI provider (Gemini/OpenAI/DeepSeek/Kimi), handles chat completions and contextual reply decisions
 - **memoryService** (`src/services/memory.service.ts`) - Stores message history per chat (group/private) with sender names, manages retention window and message limits, tracks participants
 - **userProfileService** (`src/services/userProfile.service.ts`) - Tracks user profiles (phone numbers + WhatsApp display names) to remember who people are across conversations
-- **databaseService** (`src/services/database.service.ts`) - SQLite database for persisting messages, users, conversations, and analytics
+- **databaseService** (`src/services/database.service.ts`) - PostgreSQL access via Prisma, for messages, users, conversations, analytics and the vector knowledge base
 - **wsService** (`src/services/websocket.service.ts`) - WebSocket server for real-time logs, QR code display, and connection status streaming to admin panel
 - **runtimeConfig** (`src/services/runtimeConfig.service.ts`) - Persists config to `runtime_config.json`, allows runtime changes without restart
 - **rateLimiter** (`src/services/ratelimit.service.ts`) - Prevents spam by tracking user request counts per time window
@@ -75,6 +81,173 @@ All major services are singleton instances created at module level:
 **User Identity Tracking**: Bot automatically captures WhatsApp display names (`pushName`) from incoming messages and stores them in `userProfileService`. Context now shows "John: message" instead of "+1234567890: message"
 
 **Mention/Tagging**: Bot can tag users in responses using `@Name` format. The `parseMentions()` utility (`src/utils/mention.utils.ts`) converts AI-generated @Name mentions to WhatsApp's native mention format with JIDs. Participant list is passed to LLM in context so it knows who it can mention.
+
+**Personality modes** (`src/services/persona.service.ts`): every chat runs as either
+**Assistant** (concise, task-focused) or **Companion** (conversational, matches the group's
+tone). Each mode owns its own system prompt, so switching a chat swaps the whole voice
+without editing text. Resolution order is *chat override → global default*; overrides live
+in the `chat_settings` table and are set from the Conversations tab or `!mode`.
+
+Companion is **proactive by construction**: `decideResponse()` routes its group messages to
+the contextual path regardless of `respondToGroupMessages`, so it joins in when it has
+something to add. It never overrides a safety switch — `botEnabled`, access control and
+`enablePrivateChat` all still gate it.
+
+Companion also stays honest by default: its built-in prompt tells it to admit it is a bot
+if someone sincerely asks, and never to claim to be a specific real person. Editing the
+prompt in the admin UI replaces that, so keep the clause if you want the behaviour.
+
+**Emoji reactions**: Companion's reactions come from the *same* LLM call that decides
+whether to reply (`askForReactiveReply` returns `{shouldReply, reply, reaction}`), so they
+cost no extra request — and a reaction with `shouldReply: false` is how the bot
+acknowledges something without talking. On the direct-mention path there is no decision
+call to piggyback on, so a keyword pass picks the emoji rather than paying for a request on
+every mention; Assistant keeps a neutral 👀. Values are validated by
+`sanitiseEmoji()` (`src/utils/emoji.utils.ts`) both when parsing the model response and
+again in `react()` immediately before sending, since models reply "none" or ":)" often
+enough that the send site cannot trust its caller.
+
+**Companion modifiers** — three settings that only apply to chats in Companion mode:
+
+- **Adaptive style** (`companionAdaptiveStyle`, on by default). `styleService` profiles how a
+  chat actually writes — message length, emoji rate, lowercase habits, chat shorthand,
+  non-Latin script — from messages already in SQLite, and renders it as prompt guidance.
+  **No LLM call**, so matching a group's voice costs nothing per message; profiles are cached
+  10 minutes. The bot's own messages are excluded from the sample so it mirrors the people in
+  the chat rather than drifting toward its own prior style. The guidance describes the
+  register instead of supplying phrases to copy — a bot parroting exact wording reads as
+  mockery, not rapport.
+- **Free mode** (`companionFreeMode`, off by default). A register control: allows swearing,
+  dark humour and blunt opinions, and removes hedging, disclaimers and moralising. It keeps
+  one "read the room" clause, since dropping the banter when someone is genuinely upset is
+  what a real friend does. It is a prompt, so it cannot change what the provider itself
+  refuses — that happens server-side, above any prompt.
+- **Maximum reply length** (`companionMaxChars`, default 350; 0 = no limit). Enforced twice:
+  `askLLM` receives a matching `maxTokens` budget (both providers), and anything still over is
+  trimmed on a sentence boundary by `trimToLength()`. Assistant mode is never capped.
+
+`personaService.getPromptForChat()` composes these in a deliberate order: base prompt → free
+mode → adapted style → length rule. The length rule goes last because it is the hardest
+instruction for a model to hold, and recency helps.
+
+**Live traffic only**: `messages.upsert` fires for both new messages (`type: "notify"`)
+and history sync (`type: "append"`). Only `notify` is handled — Baileys replays older
+messages on connect and after every reconnect, and answering those would make the bot blast
+replies into old conversations. Two further guards back this up: recently-seen message IDs
+are remembered (bounded at 1000) so a redelivery is not answered twice, and anything more
+than 5 minutes old is treated as replay regardless of type.
+
+**Provider resilience**: `llmService.withRetry()` retries rate limits, timeouts and provider
+outages up to 3 times with exponential backoff plus jitter. Authentication failures are *not*
+retried — they cannot fix themselves, and retrying only delays telling the operator. Failures
+become an `LLMError` carrying a user-facing message, so a chat sees "I'm being rate-limited,
+try again in a moment" or "my credentials are not working" instead of a blanket
+"something went wrong". Reconnects to WhatsApp use exponential backoff too (5s doubling to a
+5-minute cap, reset on a successful connection).
+
+**Analytics counters vs snapshots**: in `updateAnalytics`, `totalMessages`/`apiCalls`/
+`tokensUsed` accumulate, while `totalUsers`/`totalConversations` are snapshots that are only
+written when a value is supplied. Passing them through `COALESCE(excluded.x, x)` against an
+already-defaulted 0 meant COALESCE never saw NULL, so every incoming message silently reset
+both columns to zero.
+
+**Admin panel security**: the login route throttles failed attempts (5 per address, then a
+15-minute lockout) since it is the only unauthenticated endpoint; the session is regenerated
+on login to prevent fixation; and the insecure defaults (`admin123`, the fallback session
+secret) log a warning in development and **refuse to start in production**.
+
+**Media understanding**: images and voice notes are handled, not just text.
+`whatsappService.extractMedia()` attaches a `media` descriptor with a **lazy** `download()` —
+media is only fetched after `decideResponse()` has committed to replying, so unanswered
+messages cost no bandwidth. `messageHandler.resolveMedia()` then turns an image into a
+description (`analyzeImage`) and a voice note into a transcript (`transcribeAudio`: Whisper
+on OpenAI, inline audio on Gemini) before the text reaches the model. A caption is kept
+alongside the description, since the reply usually needs both. If interpretation fails the
+bot still replies — media is an enhancement, never a hard dependency. Messages with no
+caption are stored in memory as `[sent an image]` / `[sent a voice message]` rather than a
+blank line.
+
+**Usage limits** (`src/services/budget.service.ts`): the bot is driven by whoever is in the
+chat, so without a ceiling a busy group can run up an unbounded bill. Limits are expressed
+in **tokens**, which is what providers actually report — a hardcoded price list would drift.
+An optional price-per-million converts them to an estimated cost for display only. The check
+runs before the rate limit (so an exhausted budget reports the real reason) and also gates
+the contextual decision call, which costs tokens of its own. It deliberately **fails open**:
+if usage cannot be read, the bot keeps working rather than going silent over bookkeeping.
+`0` means no limit for either ceiling.
+
+**CSRF**: admin auth is a session cookie, which the browser attaches to requests made by any
+site the admin visits — so a third-party page could otherwise POST to the panel on their
+behalf. `requireCsrf` rejects any non-GET without a matching per-session token (constant-time
+compare). The client side wraps `window.fetch` **once** in `admin.ejs` rather than editing
+~28 call sites, so a newly added fetch cannot accidentally ship without the token.
+
+**Conversational pacing** (`src/services/pacer.service.ts`): Companion does not judge
+messages one at a time. Every non-mention message is buffered and the timer extended while
+people are still talking; only when the chat settles is the **whole burst** evaluated, once.
+That is what produces "several messages went by before it answered", and it also means a
+rapid burst costs one decision call instead of one per message — a several-fold cost cut in
+a busy group. Three knobs compose:
+
+- **Settle window** adapts to pace: ~4s in a quiet chat, up to 35s when busy, with a hard
+  90s ceiling so a chat that never pauses still gets evaluated.
+- **Participation budget** caps the bot's share of a chat — Selective ~15%, Present ~30%,
+  Talkative ~50% (`companionChattiness`, overridable per chat via the Conversations tab or
+  `!chattiness`). Over the ceiling it stays quiet *without* making a decision call. Two
+  corrections make the ceiling mean what the label says: the share is measured over **turns**
+  (a reply split into two messages is one turn, not two), and it is **not enforced below 8
+  turns**, because one reply in a chat that has seen two other messages is 33% and tripped
+  even the most talkative setting instantly. Together with the earlier, lower percentages,
+  that was why Companion went quiet unless it was tagged.
+- **Pace awareness** puts "this chat is busy right now" into the decision prompt, since an
+  active three-way exchange rarely needs a fourth voice. It also reports the **quiet streak**
+  — how many messages have gone by since the bot last spoke — so a bot that has been
+  listening for a while knows joining in is not an interruption.
+
+The decision prompt itself names both sides. An earlier version said only "staying quiet is
+usually right", and the model read that as "stay quiet unless tagged"; it now lists the cases
+where a person *would* speak (a question you can answer, a thread you are already in, a quiet
+chat) alongside the cases where they would not.
+
+Being @mentioned or replied to bypasses all of it — that path is unchanged and prompt. The
+switches are re-checked when the burst settles, not just when it arrives, so disabling the
+bot mid-burst still produces silence.
+
+**Human delivery** (`src/utils/humanize.utils.ts`, `humanTiming`, on by default): the tells
+were never the prose. Previously every reply quote-replied (because `quotedMessage` is
+always populated, the non-quoting branch was dead code) and the typing indicator lasted
+exactly as long as the API call regardless of reply length. Now the bot pauses to "read",
+holds `composing` for as long as the text would genuinely take to type (~45wpm, capped),
+splits a reply into two messages only when it is genuinely long (190+ chars) and has a real
+sentence boundary to break on — never three, and most replies stay whole, because splitting
+*every* reply the same way reads as more mechanical than not splitting at all. It quotes when
+a person would tap "reply": when the thread has moved on, or when the model singled out one
+message out of several (`replyTo` in the decision JSON) rather than answering the newest. It also gets the local time, how long the chat has been quiet,
+and a nudge away from reusing its own recent openers. `companionLateReplies` (off by
+default) occasionally holds a reply a minute or two, like someone who put their phone down.
+
+**Memory, in two layers**: *short-term* memory is the recent conversation replayed into every prompt (`memoryService`), bounded by `memoryMessageLimit` and `memoryWindowMs` — both read from runtime config on every use, and both accept **0 meaning "unlimited"/"never expires"**. *Long-term* memory is retrieval (`ragService`): older conversation is chunked, embedded and searched by meaning, so the bot can recall things from months ago without replaying everything. Prefer raising recall over raising the short-term limits — token cost grows with the window but stays flat with retrieval.
+
+**Outbound guard**: `messageHandler.decideResponse()` is the single place that decides whether the bot may speak. It runs *before* any outbound side effect — reply, typing indicator, or emoji reaction — so a disabled setting produces true silence. Previously the 👀 reaction was sent before the private-chat check, so disabling private replies still produced a visible reaction. The error notice in the `catch` is likewise gated on having committed to replying, so failures never leak into chats the bot should be quiet in.
+
+**System Prompt (applied immediately)**: `runtimeConfig` is the single source of truth for the system prompt. `memoryService.getSystemPrompt()` reads it from runtime config on every call, and `memoryService.setSystemPrompt()` persists it there. Both the admin UI (`/save`) and the `!system` command go through `setSystemPrompt`, so prompt changes take effect on the very next LLM call without a restart.
+
+**Being addressed**: WhatsApp's own @-mention and replying to one of the bot's messages are
+the mechanisms — matched against the bot's JID *and* its LID, on the base JID so a device
+suffix cannot break it. Mentions are read from every message branch, not just
+`extendedTextMessage`, so a tagged photo caption counts. The old plain-text trigger (the
+bot's name appearing anywhere in the message) is now `textMentionTrigger`, **off by
+default**: it fired on any sentence containing the word. When enabled the name is matched on
+a word boundary and regex-escaped. Companion sends **no acknowledgement reaction** when
+tagged — a 👀 read receipt is a bot gesture, and it was the loudest remaining tell; it
+reacts only when the model decides a message is worth a reaction. Assistant keeps the 👀.
+
+**Group roster**: `messageHandler.resolveParticipants()` merges WhatsApp's group membership
+with the people seen in conversation, so the prompt lists **everyone in the group**, marks
+who has not spoken yet and who is a group admin, and can tag any of them. Previously the
+participant list came only from stored messages, so the bot could not name or tag anyone who
+had been quiet. Group metadata is cached for 5 minutes — it was fetched twice per incoming
+message, and WhatsApp rate-limits that call.
 
 **Admin Commands**: Defined in `src/handlers/message.handler.ts:205`, validated via `AdminUtils.isAdmin()` checking against `ADMIN_NUMBERS` config
 
@@ -136,8 +309,12 @@ All commands start with `!` and are processed in `src/handlers/message.handler.t
 - `!help` - List available commands
 - `!status` - Show memory stats, LLM config, system prompt
 - `!clear [all|chatId]` - Clear memory for current chat, specific chat, or all chats
-- `!system <prompt>` - Update system prompt (persisted to runtime config)
+- `!system <prompt>` - Update the prompt for this chat's personality mode
+- `!mode [assistant|companion]` - Show or set this chat's personality mode
+- `!chattiness [selective|present|talkative|default]` - How much it joins in
 - `!private on|off` - Enable/disable private chat responses
+- `!notes` - Show the standing notes for this chat; `!notes refresh` rewrites them from the
+  recent conversation, `!notes clear` wipes them, `!notes <text>` replaces them by hand
 
 ## Admin Web UI
 
@@ -146,11 +323,57 @@ Available at `http://localhost:3000/admin/login` when bot is running. Mounted vi
 **Features**:
 - **Authentication**: Login with `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` (bcrypt)
 - **Dashboard**: Real-time stats (messages, users, conversations, today's activity)
-- **Settings Tab**: Configure bot name, admin numbers, rate limits, LLM provider/keys, system prompt
+- **Settings Tab**: Bot name, admin numbers, rate limits, LLM provider/keys, the two
+  personality prompts, memory limits and recall settings
 - **Conversations Tab**: View recent conversations and search messages
-- **Analytics Tab**: Usage statistics (coming soon)
+- **Analytics Tab**: Usage statistics, served by `GET /api/analytics?days=7|30|90`
+  - A single filter row (7/30/90 days) scopes every stat, chart and table on the tab,
+    so all the numbers on screen always describe the same window
+  - KPI row: messages, AI calls, tokens used, active people (with deltas vs the
+    preceding equal-length window where a baseline exists)
+  - Charts: messages per day (line + area), activity by hour (columns), most active
+    people and busiest chats (ranked bars)
+  - Every chart has a **table view** toggle, so no value is reachable only by hovering
+  - Rendering lives in `public/js/analytics.js` — hand-rolled inline SVG with **no
+    charting dependency**, so the panel works on an air-gapped host. Charts render on
+    first reveal of the tab (they need a measurable width) and re-render on resize.
+  - Chart colors are declared once as CSS custom properties (`--chart-*`) in
+    `views/admin.ejs`; the series hue is the app's brand indigo, validated for
+    contrast and colour-vision safety against the white card surface
+- **People Tab**: Identity and directory
+  - The bot's own connected account (`GET /api/me`)
+  - Everyone the bot has seen, searchable, with message/chat counts (`GET /api/users`)
+  - Per-person detail: profile, which chats they appear in, recent messages
+    (`GET /api/users/:phone` — tolerates the number with or without a `+` prefix)
+  - Chat participants (`GET /api/chats/:chatId/participants`). For groups this comes
+    from WhatsApp, so it includes people who have never spoken, plus group-admin roles,
+    enriched with what the database knows
+- **Memory Tab**: Long-term recall management (see "Long-term memory (RAG)" below)
+  - Index status, chunk counts, embedding model in use
+  - Index new / Rebuild all / Clear
+  - **Test recall**: run a query and see exactly what the bot would remember, with
+    similarity scores, without sending a WhatsApp message
+  - **Standing notes**: read and edit the per-chat notes (see "Standing notes" below),
+    rewrite them on demand, or clear them
+  - `ragMaxChars` in Settings is the single biggest dial on cost per reply — see
+    "Prompt cost" below
+- **Connection panel** (top of the page): the WhatsApp link-up is one process with several
+  stages, so it is one panel with a named state — `starting` / `awaiting_scan` / `connected` /
+  `reconnecting`. Previously the panel knew only "connected or not", so the several seconds
+  between starting the bot and WhatsApp producing a QR showed nothing at all and read as a
+  failure; there is now a spinner and a line saying what it is waiting for. The state and any
+  pending QR are also served over HTTP (`GET /api/connection`), so a page opened *after* a QR
+  was broadcast still shows it instead of waiting for the next one.
+- **Settings**: the fields most operators never touch (chat behaviour, memory internals,
+  rate limits, usage limits) sit behind an "Advanced settings" disclosure, which roughly
+  halves the height of the tab.
 - **Logs Tab**: Real-time logs viewer with WebSocket streaming
-  - Live log streaming from all services
+  - Live log streaming from all services. Every winston log (`logger.*`) is bridged
+    to the admin panel via a custom transport in `src/lib/logger.ts`
+    (`WebSocketTransport` → `wsService.pushLog()`), so the tab reflects real activity
+    instead of only manually-instrumented messages. INFO and above are streamed to
+    keep the view readable; DEBUG stays in the console/file logs.
+  - Client-side controls: level filter, message search, entry count, download logs
   - QR code display for WhatsApp connection
   - Connection status indicator (connected/disconnected)
   - Auto-scroll toggle and clear logs buttons
@@ -165,6 +388,193 @@ The admin panel connects to `ws://localhost:3000/ws` for real-time updates:
 - **QR code display**: QR code appears automatically in the Logs tab when needed
 - **Connection status**: Shows WhatsApp connection status and connected phone number
 - **Auto-reconnect**: WebSocket automatically reconnects if connection is lost
+
+## Database (PostgreSQL + Prisma + pgvector)
+
+Storage is PostgreSQL, accessed through Prisma. `docker compose up` starts
+`pgvector/pgvector:pg16` and the app together; the app waits on the database's
+healthcheck so first boot cannot race.
+
+**Schema and migrations** live in `prisma/`. Prisma 7 moved the connection URL out
+of `schema.prisma` into `prisma.config.ts`; runtime connections use the `pg`
+driver adapter in `src/lib/prisma.ts`. `npm run prisma:migrate` creates a
+migration in development, `npm run prisma:deploy` applies pending ones (which is
+what the container does on start).
+
+Two conventions the service layer enforces:
+
+- **Timestamps cross the boundary as plain numbers.** They are stored as `BigInt`
+  because epoch milliseconds overflow a 32-bit int, but every method converts to
+  `number` on the way out and back on the way in — so callers, and
+  `JSON.stringify` (which throws on BigInt), never see one.
+- **Vectors are raw SQL.** Prisma has no vector type, so `knowledge_chunks.vector`
+  is declared `Unsupported("vector")` to keep migrations authoritative, and is
+  written and searched with `$queryRaw`.
+
+**Vector search** uses pgvector's `<=>` cosine-distance operator. Vectors are
+stored L2-normalised, so `score = 1 - distance` — identical in meaning to the
+previous dot-product implementation, but computed in Postgres instead of scanning
+every row in JavaScript. Measured: 913 chunks indexed in ~380ms, a query in ~4ms.
+
+The vector column deliberately has **no fixed dimension**: OpenAI
+text-embedding-3-small is 1536-dim and Gemini text-embedding-004 is 768-dim, so
+pinning a size would reject whichever provider was not chosen at migration time.
+The cost is that pgvector's ANN indexes (ivfflat/hnsw) need a fixed dimension, so
+search is exact rather than approximate. `dim` is stored per row and filtered on,
+so vectors of different sizes never get compared. A deployment settled on one
+provider can pin the dimension and add:
+`CREATE INDEX ON knowledge_chunks USING hnsw (vector vector_cosine_ops);`
+
+**Async boundary**: Prisma is async, so `databaseService` methods return promises.
+One deliberate exception to the resulting cascade — `personaService` keeps its
+per-chat overrides in an **in-memory map**, warmed by `personaService.load()` at
+startup and written through on change. `getPersonaForChat()` runs for every
+message and from synchronous code like `decideResponse()`, so it must not await;
+caching also avoids a database round-trip per message for something that changes
+rarely.
+
+## Docker
+
+`docker compose up` runs the dev stack: Postgres with pgvector, plus the bot with
+**hot reload** — `./src`, `./views`, `./public` and `./prisma` are bind-mounted, so
+editing on the host restarts the server in the container. `node_modules` is an
+anonymous volume so the container's Alpine-built modules are never shadowed by the
+host's (the usual cause of "invalid ELF header").
+
+`docker compose --profile prod up` builds the production target instead: compiled
+JavaScript, no dev dependencies, no compiler in the image.
+
+The Dockerfile is staged `base → deps → {dev, builder → production}`. `prisma
+generate` runs at build time so the image needs no network on first boot.
+
+Note: `ADMIN_PASSWORD_HASH` and `SESSION_SECRET` are *not* declared with Compose's
+`${VAR:?}` required syntax, because Compose interpolates every service regardless
+of profile — that would break `docker compose up` for the dev stack. The app
+itself refuses to boot in production without them, which keeps the rule in one
+place.
+
+## Long-term memory (RAG)
+
+`src/services/rag.service.ts` gives the bot recall beyond its recent-message window.
+
+**Pipeline**: stored messages → chunked (break on a 30-minute silence, 12 messages, or
+1600 chars) → embedded once via `embeddingService` → stored as an L2-normalised pgvector
+value in `knowledge_chunks`. At reply time the incoming message is embedded and the
+nearest chunks are prepended to the prompt by `messageHandler.buildContext()`.
+
+**Storage**: chunks live in PostgreSQL and search runs through pgvector — see the
+Database section above for the indexing and dimension trade-offs. LangChain is
+deliberately **not** used; the whole pipeline is a few hundred lines against the
+provider SDKs directly.
+
+**Indexing** is incremental, driven by a per-chat watermark in `knowledge_state`, and runs
+in the background every 5 minutes (`startBackgroundIndexing`, wired up in `index.ts`).
+Chunks record the embedding model that produced them, and search filters on it — so
+changing model yields no stale matches rather than silently wrong ones. Use **Rebuild all**
+in the Memory tab after a model change.
+
+**Privacy**: recall is scoped to the current chat unless `ragCrossChat` is enabled, which
+decides whether something said in one group can surface in another. Off by default.
+
+Retrieval failures are always swallowed — a reply must never fail because recall did.
+
+## Prompt cost
+
+The bot re-sends most of its prompt on every message, so prompt *shape* is the
+main cost lever. Measured on a 30-member group with 40 messages of history, the
+Companion decision call was 2,588 tokens; the same call is now 1,875 — a 28% cut
+with no change to what the model is told. Four things did it, and each is worth
+keeping in mind when adding to the prompt:
+
+- **Stable-first ordering.** `buildContext` emits a *stable* half (group
+  metadata, member list, standing notes) before a *volatile* half (clock, pace,
+  recalled memories, the conversation). Providers cache identical prompt
+  prefixes, and the first line used to be the wall-clock time — which changes
+  every minute and capped the cacheable prefix at the system prompt. The static
+  decision instructions moved into that prefix too (`DECISION_INSTRUCTIONS` in
+  `llm.service.ts`), which is what lifts it to ~1,044 tokens, just over the
+  1,024-token threshold where OpenAI's automatic caching engages. **Anything new
+  and stable belongs at the front; anything per-message belongs at the back.**
+- **No duplicated system prompt.** The decision call sent the system prompt twice
+  on the OpenAI path — once as the system message and once embedded at the top of
+  the user message. That was a measured 365 tokens per call.
+- **Recall is bounded by characters, not just chunk count.** `ragTopK` caps how
+  many chunks come back, but a chunk is up to 1,600 characters, so `topK: 4`
+  quietly authorised 6,400 — the largest single item in the prompt. `ragMaxChars`
+  (default 2,500) caps the total; hits arrive best-first so the tail is what goes.
+- **Recall skips what the prompt already carries.** Chunks ending inside the
+  short-term window are text the recent-conversation block is printing verbatim,
+  so they were paid for twice *and* shown to the model under two labels. The
+  handler passes `memoryService.getOldestTimestamp()` as the boundary.
+
+Two gates avoid calls altogether, both deliberately conservative because the
+previous round of work was about Companion being too *silent*:
+
+- `isWorthRetrieving` (`rag.service.ts`) skips the embedding call and the recall
+  block for messages with nothing to search on — "ok", "haha", a bare emoji.
+- `burstHasSubstance` (`message.handler.ts`) skips the whole decision call when
+  every message in a settled burst is an acknowledgement. A tag, a reply to the
+  bot, a question mark, media, or any message of substance always goes through.
+
+Output is capped too (`DECISION_MAX_TOKENS`, and `maxTokens` on the notes
+rewrite): output tokens cost several times input, and both produce short text
+that a later cap would truncate anyway.
+
+## Standing notes (the bot's MEMORY.md)
+
+`src/services/groupMemory.service.ts` keeps one small markdown document per chat and puts it
+in **every** prompt. It is the third memory layer, and it answers a question the other two
+cannot: short-term memory is "what was just said" and scrolls away; retrieval only surfaces
+when a query happens to match. Neither gives the bot what a person carries into every
+conversation unprompted — who these people are, what they are in the middle of, what was
+already decided, what the running jokes are.
+
+- Rewritten by the model every `groupMemoryRefreshEvery` messages (default 40) — **one extra
+  completion per refresh, not per message** — driven by a counter on `chat_settings`, and
+  detached from the reply path so answering never waits on housekeeping.
+- Capped at 2,000 characters and asked for under 250 words, so it can never crowd out the
+  prompt, and told to *drop* what is finished rather than accumulate history.
+- **Editable**, from the Memory tab or `!notes <text>`. This matters: auto-written notes are
+  occasionally wrong, and without a correction path a wrong belief would persist into every
+  reply.
+- Switched off with `groupMemoryEnabled`, which mutes both the rewrites and the prompt
+  injection.
+- Every failure is swallowed and logged — a chat must never stop working because a summary
+  did.
+
+## Fixtures / demo data
+
+`scripts/seed.ts` (`npm run seed`) populates the SQLite database with realistic demo
+traffic so the dashboard — especially the Analytics tab — can be developed and
+reviewed without waiting for weeks of real usage.
+
+- Generates messages across 3 demo groups and 3 demo private chats, spread over N days
+  with a weekday/weekend rhythm, an hour-of-day curve, and a gentle upward trend
+- Uses a **deterministic PRNG**, so repeated runs produce the same reviewable dataset
+- Derives the `analytics` rows from the generated messages, so the totals, charts and
+  per-chat/per-user breakdowns all agree with each other
+- All demo rows are namespaced behind `demo-*` chat IDs and `999000*` phone numbers, so
+  `--reset` / `--clean` remove exactly what the script created and never touch real
+  conversations
+
+`scripts/` sits outside `rootDir` (`./src`), so it is excluded from `npm run build`;
+`ts-node` type-checks it at run time.
+
+## Analytics data model
+
+`databaseService.updateAnalytics()` maintains one row per date. Two things feed it:
+
+- **`totalMessages`** — incremented by `memoryService.addMessage()`
+- **`apiCalls` / `tokensUsed`** — incremented by `recordUsage()` in
+  `src/services/llm.service.ts` after every completion, vision call and contextual
+  reply decision, reading `usage.total_tokens` (OpenAI) or
+  `usageMetadata.totalTokenCount` (Gemini). Analytics failures are swallowed so they
+  can never break a reply.
+
+Range-scoped breakdowns (`getTopUsers`, `getTopConversations`, `getHourlyActivity`,
+`getRangeTotals`) are computed from the `messages` table rather than the daily
+aggregates, which keeps them consistent with each other. The bot's own messages are
+stored with sender `Bot` and excluded from "most active people".
 
 ## Testing
 
@@ -226,7 +636,7 @@ npm run lint
 npm run lint:fix
 ```
 
-ESLint configured with TypeScript rules in `eslint.config.js`
+ESLint configured with TypeScript rules in `eslint.config.mjs` (uses ESM `import`, so the `.mjs` extension is required because `package.json` sets `"type": "commonjs"`)
 
 ### Prettier
 

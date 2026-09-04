@@ -1,0 +1,154 @@
+// Prisma schema for the WhatsApp AI bot.
+//
+// Notes on two deliberate choices:
+//
+// 1. `knowledgeChunk.vector` is typed `Unsupported("vector(1536)")`. Prisma has no
+//    native vector type, so the column is declared here (to keep migrations
+//    authoritative) but read and written through `$queryRaw`. Similarity search
+//    uses pgvector's `<=>` cosine-distance operator, which an ivfflat index can
+//    serve — the previous SQLite implementation had to scan every row in JS.
+//
+// 2. The vector column is deliberately declared WITHOUT a fixed dimension.
+//    OpenAI text-embedding-3-small is 1536-dim and Gemini text-embedding-004 is
+//    768-dim, so pinning a size would make the schema reject whichever provider
+//    was not chosen at migration time. The trade-off is that pgvector's ANN
+//    indexes (ivfflat/hnsw) require a fixed dimension, so search is exact rather
+//    than approximate — correct, and fast well beyond the volume a chat bot
+//    produces. A deployment that settles on one provider can add:
+//      CREATE INDEX ON knowledge_chunks USING hnsw (vector vector_cosine_ops);
+//    after fixing the dimension. `dim` is stored per row and filtered on, so
+//    vectors of different sizes can coexist without ever being compared.
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../node_modules/.prisma/client"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+// The connection URL lives in prisma.config.ts (Prisma 7 moved it out of the
+// schema). `extensions` requires the postgresqlExtensions preview feature.
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector]
+}
+
+model Message {
+  id          Int      @id @default(autoincrement())
+  chatId      String
+  sender      String
+  senderName  String
+  text        String
+  messageType String   @default("text")
+  mediaUrl    String?
+  timestamp   BigInt
+  createdAt   DateTime @default(now())
+
+  @@index([chatId])
+  @@index([sender])
+  @@index([timestamp])
+  // Serves the "recent messages for this chat" query directly.
+  @@index([chatId, timestamp])
+  @@map("messages")
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  phoneNumber  String   @unique
+  displayName  String?
+  pushName     String?
+  lastSeen     BigInt
+  messageCount Int      @default(0)
+  firstSeen    BigInt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("users")
+}
+
+model Conversation {
+  id            Int      @id @default(autoincrement())
+  chatId        String   @unique
+  chatName      String?
+  isGroup       Boolean  @default(false)
+  messageCount  Int      @default(0)
+  lastMessageAt BigInt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("conversations")
+}
+
+model Analytics {
+  id                 Int      @id @default(autoincrement())
+  date               String   @unique
+  totalMessages      Int      @default(0)
+  totalUsers         Int      @default(0)
+  totalConversations Int      @default(0)
+  apiCalls           Int      @default(0)
+  tokensUsed         Int      @default(0)
+  createdAt          DateTime @default(now())
+
+  @@index([date])
+  @@map("analytics")
+}
+
+model AccessListEntry {
+  id         Int      @id @default(autoincrement())
+  identifier String
+  // "whitelist" | "blacklist" — one table with a discriminator, so an identifier
+  // can appear on both lists without a composite-table workaround.
+  list       String
+  type       String
+  name       String?
+  reason     String?
+  addedBy    String?
+  createdAt  DateTime @default(now())
+
+  @@unique([list, identifier])
+  @@index([identifier])
+  @@map("access_list")
+}
+
+model KnowledgeChunk {
+  id             Int                          @id @default(autoincrement())
+  chatId         String
+  chatName       String?
+  isGroup        Boolean                      @default(false)
+  text           String
+  startTimestamp BigInt
+  endTimestamp   BigInt
+  messageCount   Int                          @default(0)
+  model          String
+  dim            Int
+  vector         Unsupported("vector")?
+  createdAt      DateTime                     @default(now())
+
+  @@index([chatId])
+  @@index([model])
+  @@map("knowledge_chunks")
+}
+
+model KnowledgeState {
+  chatId               String   @id
+  lastIndexedTimestamp BigInt
+  updatedAt            DateTime @updatedAt
+
+  @@map("knowledge_state")
+}
+
+model ChatSetting {
+  chatId String @id
+  persona String?
+  /// "selective" | "present" | "talkative"; null follows the global setting.
+  chattiness String?
+  /// Standing notes about this chat, in markdown — the bot's MEMORY.md for the
+  /// group. Rewritten periodically by the model and editable from the admin UI.
+  notes String?
+  notesUpdatedAt DateTime?
+  /// Messages seen since the notes were last rewritten, so the refresh is
+  /// driven by actual conversation rather than a clock.
+  notesMessagesSince Int @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("chat_settings")
+}

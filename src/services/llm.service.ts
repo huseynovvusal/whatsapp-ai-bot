@@ -1,10 +1,111 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
-import OpenAI from "openai"
+import OpenAI, { toFile } from "openai"
 import { config } from "@/config/env"
 import { runtimeConfig } from "@/services/runtimeConfig.service"
+import { databaseService } from "@/services/database.service"
 import { createLogger } from "@/lib/logger"
+import { budgetService } from "@/services/budget.service"
+import { sanitiseEmoji } from "@/utils/emoji.utils"
 
 const logger = createLogger(config.LOG_LEVEL, "LLMService")
+
+/**
+ * Output ceiling for the Companion decision call. It returns a JSON object
+ * wrapping a chat message, so a few hundred tokens is generous.
+ */
+const DECISION_MAX_TOKENS = 300
+
+/**
+ * The decision task, verbatim on every call.
+ *
+ * It lives up here, and is sent as part of the *prefix* rather than alongside the
+ * messages, for one reason: providers cache identical prompt prefixes, and a
+ * ~310-token constant is 310 tokens that never need re-reading. Putting the
+ * static instructions in front of the volatile conversation is what lifts the
+ * cacheable prefix over the threshold where caching engages at all.
+ */
+const DECISION_INSTRUCTIONS = `You are following this group chat. Decide how to respond to the message (or messages) below, the way someone in the group would.
+
+SPEAK UP when any of these is true:
+- Someone asked a question you can actually answer, even if they did not ask you.
+- Something was said that you have a genuine reaction or opinion about.
+- You are already part of this thread — you said something recently and they are still on it.
+- The chat has been quiet and someone opened a topic worth picking up.
+
+STAY QUIET when:
+- Two other people are mid-exchange and a third voice would interrupt.
+- You would only be agreeing, acknowledging, or restating what was said. React with an emoji instead.
+- You have nothing to add beyond politeness.
+
+If several messages are shown, they are numbered. Set "replyTo" to the number of the one you are actually answering — that becomes a WhatsApp reply to that exact message. Leave it out when you are responding to the conversation as a whole.
+
+Return a single-line JSON object and nothing else:
+{ "shouldReply": true|false, "reply": "<short reply, only if shouldReply is true>", "reaction": "<a single emoji, or empty string for none>", "replyTo": <message number, or omit> }`
+
+
+/**
+ * Record a single LLM API call (and its token usage, when the provider reports it)
+ * against today's analytics row. Failures here must never break a reply.
+ */
+function recordUsage(tokensUsed: number = 0): void {
+  try {
+    const today = new Date().toISOString().split("T")[0]
+    databaseService.updateAnalytics(today, { apiCalls: 1, tokensUsed })
+    // So the next budget check sees this call rather than a stale cache.
+    budgetService.invalidate()
+  } catch (err) {
+    logger.warn("Failed to record LLM usage analytics", err)
+  }
+}
+
+/** Error carrying a user-facing explanation, so chats get something useful. */
+export class LLMError extends Error {
+  constructor(
+    message: string,
+    public readonly userMessage: string,
+    public readonly retryable: boolean
+  ) {
+    super(message)
+    this.name = "LLMError"
+  }
+}
+
+/** Classify a provider error so we know whether retrying can help. */
+function classifyError(error: unknown): { status?: number; retryable: boolean; user: string } {
+  const err = error as { status?: number; code?: string; message?: string }
+  const status = typeof err?.status === "number" ? err.status : undefined
+  const text = String(err?.message || err?.code || "").toLowerCase()
+
+  const looksRateLimited = status === 429 || text.includes("rate limit") || text.includes("quota")
+  const looksOverloaded =
+    status === 503 || status === 502 || status === 500 || text.includes("overloaded")
+  const looksTimeout =
+    text.includes("timeout") || text.includes("etimedout") || text.includes("econnreset") ||
+    text.includes("socket hang up") || text.includes("fetch failed")
+  const looksAuth = status === 401 || status === 403 || text.includes("api key")
+
+  if (looksRateLimited) {
+    return { status, retryable: true, user: "⏳ I'm being rate-limited right now. Try again in a moment." }
+  }
+  if (looksOverloaded || looksTimeout) {
+    return { status, retryable: true, user: "⚠️ The AI service is not responding. Try again shortly." }
+  }
+  if (looksAuth) {
+    // Retrying a bad key just burns time; surface it so the operator fixes it.
+    return { status, retryable: false, user: "🔑 My AI credentials are not working. An admin needs to check the API key." }
+  }
+  return { status, retryable: false, user: "❌ Sorry, something went wrong. Please try again." }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** The part of a Gemini result this service actually reads. */
+interface GeminiResult {
+  response: Promise<{
+    text(): string
+    usageMetadata?: { totalTokenCount?: number }
+  }>
+}
 
 export class LLMService {
   private provider: "openai" | "gemini" = "gemini"
@@ -17,6 +118,45 @@ export class LLMService {
 
   constructor() {
     this.initialize()
+  }
+
+  /**
+   * Run a provider call with bounded retries.
+   *
+   * Rate limits, timeouts and provider outages are transient — retrying with
+   * backoff turns most of them into a slightly slow reply instead of a visible
+   * failure. Authentication errors are not retried, since they cannot resolve
+   * themselves and retrying only delays the real message to the operator.
+   */
+  private async withRetry<T>(label: string, run: () => Promise<T>): Promise<T> {
+    const maxAttempts = 3
+    let lastError: unknown
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await run()
+      } catch (error) {
+        lastError = error
+        const { status, retryable, user } = classifyError(error)
+
+        if (!retryable || attempt === maxAttempts) {
+          logger.error(
+            `${label} failed after ${attempt} attempt(s)${status ? ` (status ${status})` : ""}`,
+            error
+          )
+          throw new LLMError(`${label} failed`, user, retryable)
+        }
+
+        // Exponential backoff with jitter, so simultaneous chats do not retry in lockstep.
+        const delay = Math.round(500 * Math.pow(2, attempt - 1) * (1 + Math.random() * 0.3))
+        logger.warn(
+          `${label} attempt ${attempt}/${maxAttempts} failed${status ? ` (status ${status})` : ""}; retrying in ${delay}ms`
+        )
+        await sleep(delay)
+      }
+    }
+
+    throw lastError
   }
 
   /**
@@ -64,7 +204,12 @@ export class LLMService {
   /**
    * Ask the LLM with user text and context
    */
-  public async askLLM(userText: string, context: string, systemPrompt: string): Promise<string> {
+  public async askLLM(
+    userText: string,
+    context: string,
+    systemPrompt: string,
+    options: { maxTokens?: number } = {}
+  ): Promise<string> {
     try {
       logger.debug(`Asking LLM with user text: "${userText.substring(0, 50)}..."`)
 
@@ -77,30 +222,43 @@ User: ${userText}
 Assistant:`
 
       if (this.provider === "openai" && this.openai && this.openaiModel) {
-        const res = await this.openai.chat.completions.create({
-          model: this.openaiModel,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: `${context}\n\n${userText}` },
-          ],
-          temperature: 0.6,
-          max_tokens: 256,
-        })
+        const res = await this.withRetry("OpenAI completion", () =>
+          this.openai!.chat.completions.create({
+            model: this.openaiModel!,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `${context}\n\n${userText}` },
+            ],
+            temperature: 0.6,
+            // A tight cap is the enforcement behind the prompt's length rule:
+            // Companion passes a small budget so the model cannot ramble.
+            max_tokens: options.maxTokens || 1024,
+          })
+        )
         const answer = res.choices?.[0]?.message?.content || ""
+        recordUsage(res.usage?.total_tokens || 0)
         logger.info("LLM response received successfully (OpenAI)")
         return answer
       }
 
       // Gemini path
       if (!this.geminiModel) throw new Error("Gemini model not initialized")
-      const result = await this.geminiModel.generateContent(fullPrompt)
+      const result = await this.withRetry<GeminiResult>("Gemini completion", () =>
+        this.geminiModel.generateContent({
+          contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+          generationConfig: { maxOutputTokens: options.maxTokens || 1024 },
+        })
+      )
       const response = await result.response
       const answer = response.text()
+      recordUsage(response.usageMetadata?.totalTokenCount || 0)
       logger.info("LLM response received successfully (Gemini)")
       return answer
     } catch (error) {
+      // withRetry already logged and classified; keep its user-facing message.
+      if (error instanceof LLMError) throw error
       logger.error("Error calling LLM:", error)
-      throw new Error("Failed to get response from AI. Please try again.")
+      throw new LLMError("askLLM failed", classifyError(error).user, false)
     }
   }
 
@@ -112,16 +270,28 @@ Assistant:`
     userText: string,
     context: string,
     systemPrompt: string
-  ): Promise<{ shouldReply: boolean; reply?: string }> {
+  ): Promise<{ shouldReply: boolean; reply?: string; reaction?: string; replyTo?: number }> {
     try {
-      const prompt = `${systemPrompt}
+      // The same call also picks an emoji, so reacting costs no extra request.
+      // Reacting without replying is a normal, low-noise way to acknowledge a
+      // message — so `reaction` is meaningful even when shouldReply is false.
+      //
+      // The guidance below is deliberately two-sided. An earlier version said
+      // only "staying quiet is usually right", and the model took that to mean
+      // "stay quiet unless tagged" — the bot went mute in real group chats.
+      // Naming the cases where a person *would* speak restores the balance.
+      // Split in two: everything the provider can cache as a stable prefix, and
+      // the task itself. On the OpenAI path the prefix goes in the system message
+      // and only the task in the user message — the system prompt used to be sent
+      // *twice* (once as the system message, once embedded at the top of this
+      // string), which was a measured 365 wasted tokens on every decision call.
+      const preamble = `${systemPrompt}
 
-${context}
+${DECISION_INSTRUCTIONS}
 
-You are assigned to decide whether the assistant should jump into a group chat given the message below. Only return a single-line JSON object exactly as follows:
-{ "shouldReply": true|false, "reply": "<short reply if shouldReply true>" }
+${context}`
 
-Message: ${userText}
+      const task = `${userText}
 `
 
       let text = ""
@@ -129,30 +299,48 @@ Message: ${userText}
         const res = await this.openai.chat.completions.create({
           model: this.openaiModel,
           messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: prompt },
+            { role: "system", content: preamble },
+            { role: "user", content: task },
           ],
           temperature: 0.3,
+          // The reply this call produces is a chat message, not an essay, and
+          // output tokens cost several times what input tokens do. Unbounded, a
+          // model that decides to ramble is billed for all of it before the
+          // length cap throws most of it away.
+          max_tokens: DECISION_MAX_TOKENS,
         })
         text = (res.choices?.[0]?.message?.content || "").trim()
+        recordUsage(res.usage?.total_tokens || 0)
       } else {
         if (!this.geminiModel) throw new Error("Gemini model not initialized")
-        const result = await this.geminiModel.generateContent(prompt)
+        const result = await this.geminiModel.generateContent({
+          contents: [{ role: "user", parts: [{ text: `${preamble}\n\n${task}` }] }],
+          generationConfig: { maxOutputTokens: DECISION_MAX_TOKENS, temperature: 0.3 },
+        })
         const response = await result.response
         text = response.text().trim()
+        recordUsage(response.usageMetadata?.totalTokenCount || 0)
+      }
+
+      const toDecision = (parsed: Record<string, unknown>) => {
+        const replyTo = Number(parsed.replyTo)
+        return {
+          shouldReply: Boolean(parsed.shouldReply),
+          reply: typeof parsed.reply === "string" ? parsed.reply : undefined,
+          reaction: sanitiseEmoji(parsed.reaction),
+          replyTo: Number.isInteger(replyTo) && replyTo > 0 ? replyTo : undefined,
+        }
       }
 
       // Try to parse JSON directly
       try {
-        const parsed = JSON.parse(text)
-        return { shouldReply: Boolean(parsed.shouldReply), reply: parsed.reply }
+        return toDecision(JSON.parse(text))
       } catch (err) {
-        // Try to extract JSON substring using regex
+        // Models often wrap the object in prose or a code fence; pull it out.
         const match = text.match(/\{[\s\S]*\}/)
         if (match && match[0]) {
           try {
-            const parsed2 = JSON.parse(match[0])
-            return { shouldReply: Boolean(parsed2.shouldReply), reply: parsed2.reply }
+            return toDecision(JSON.parse(match[0]))
           } catch (e) {
             // fallthrough
           }
@@ -170,22 +358,88 @@ Message: ${userText}
   /**
    * Simple ask without context (for quick queries)
    */
-  public async ask(userText: string): Promise<string> {
+  public async ask(userText: string, options: { maxTokens?: number } = {}): Promise<string> {
     try {
       if (this.provider === "openai" && this.openai && this.openaiModel) {
         const res = await this.openai.chat.completions.create({
           model: this.openaiModel,
           messages: [{ role: "user", content: userText }],
+          ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
         })
+        recordUsage(res.usage?.total_tokens || 0)
         return res.choices?.[0]?.message?.content || ""
       }
       if (!this.geminiModel) throw new Error("Gemini model not initialized")
-      const result = await this.geminiModel.generateContent(userText)
+      const result = await this.geminiModel.generateContent(
+        options.maxTokens
+          ? {
+              contents: [{ role: "user", parts: [{ text: userText }] }],
+              generationConfig: { maxOutputTokens: options.maxTokens },
+            }
+          : userText
+      )
       const response = await result.response
+      recordUsage(response.usageMetadata?.totalTokenCount || 0)
       return response.text()
     } catch (error) {
       logger.error("Error in simple LLM ask:", error)
       throw new Error("Failed to get response from AI.")
+    }
+  }
+
+  /**
+   * Transcribe a voice note or audio clip to text.
+   *
+   * OpenAI uses Whisper; Gemini accepts the audio inline on its normal
+   * multimodal endpoint. Both go through the same retry path as everything else.
+   */
+  public async transcribeAudio(
+    audioBuffer: Buffer,
+    mimeType: string = "audio/ogg"
+  ): Promise<string> {
+    try {
+      logger.debug(`Transcribing ${audioBuffer.length} bytes of ${mimeType}`)
+
+      if (this.provider === "openai" && this.openai) {
+        // Whisper picks the format from the filename, so give it a sane extension.
+        const extension = mimeType.includes("mp3")
+          ? "mp3"
+          : mimeType.includes("mp4") || mimeType.includes("m4a")
+            ? "m4a"
+            : mimeType.includes("wav")
+              ? "wav"
+              : "ogg"
+        const res = await this.withRetry("Whisper transcription", async () =>
+          this.openai!.audio.transcriptions.create({
+            file: await toFile(audioBuffer, `voice.${extension}`, { type: mimeType }),
+            model: "whisper-1",
+          })
+        )
+        // Whisper is billed by audio length, not tokens, so only the call counts.
+        recordUsage(0)
+        logger.info("Audio transcribed successfully (Whisper)")
+        return (res.text || "").trim()
+      }
+
+      if (!this.geminiModel) throw new Error("Gemini model not initialized")
+      const result = await this.withRetry<GeminiResult>("Gemini transcription", () =>
+        this.geminiModel.generateContent([
+          {
+            inlineData: { data: audioBuffer.toString("base64"), mimeType },
+          },
+          "Transcribe this audio exactly. Reply with only the transcription, no commentary. " +
+            "If there is no intelligible speech, reply with an empty string.",
+        ])
+      )
+      const response = await result.response
+      const text = response.text()
+      recordUsage(response.usageMetadata?.totalTokenCount || 0)
+      logger.info("Audio transcribed successfully (Gemini)")
+      return (text || "").trim()
+    } catch (error) {
+      if (error instanceof LLMError) throw error
+      logger.error("Error transcribing audio:", error)
+      throw new LLMError("transcribeAudio failed", classifyError(error).user, false)
     }
   }
 
@@ -199,8 +453,13 @@ Message: ${userText}
       if (this.provider === "openai" && this.openai && this.openaiModel) {
         // Use GPT-4 Vision (need gpt-4-vision-preview or gpt-4o)
         const base64Image = imageBuffer.toString("base64")
-        const res = await this.openai.chat.completions.create({
-          model: this.openaiModel.includes("vision") || this.openaiModel.includes("4o") ? this.openaiModel : "gpt-4o",
+        const res = await this.withRetry("OpenAI vision", () =>
+          this.openai!.chat.completions.create({
+          // Fall back to a known-vision model when the configured one is text-only.
+          model:
+            this.openaiModel!.includes("vision") || this.openaiModel!.includes("4o")
+              ? this.openaiModel!
+              : "gpt-4o",
           messages: [
             {
               role: "user",
@@ -215,9 +474,11 @@ Message: ${userText}
               ]
             }
           ],
-          max_tokens: 500
-        })
+            max_tokens: 500,
+          })
+        )
         const answer = res.choices?.[0]?.message?.content || ""
+        recordUsage(res.usage?.total_tokens || 0)
         logger.info("Image analyzed successfully (OpenAI Vision)")
         return answer
       }
@@ -233,14 +494,18 @@ Message: ${userText}
         }
       }
 
-      const result = await this.geminiModel.generateContent([prompt, imagePart])
+      const result = await this.withRetry<GeminiResult>("Gemini vision", () =>
+        this.geminiModel.generateContent([prompt, imagePart])
+      )
       const response = await result.response
       const answer = response.text()
+      recordUsage(response.usageMetadata?.totalTokenCount || 0)
       logger.info("Image analyzed successfully (Gemini Vision)")
       return answer
     } catch (error) {
+      if (error instanceof LLMError) throw error
       logger.error("Error analyzing image:", error)
-      throw new Error("Failed to analyze image. Please try again.")
+      throw new LLMError("analyzeImage failed", classifyError(error).user, false)
     }
   }
 }

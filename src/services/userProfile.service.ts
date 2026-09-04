@@ -29,19 +29,18 @@ export class UserProfileService {
     }
     this.profiles.set(phoneNumber, profile)
 
-    // Save to database
-    try {
-      databaseService.upsertUser({
+    // Persisted in the background: profile updates happen on the message hot
+    // path and must not add database latency to every incoming message.
+    void databaseService
+      .upsertUser({
         phoneNumber,
         displayName: profile.name,
         pushName: profile.pushName,
         lastSeen: now,
         firstSeen: existing?.lastSeen || now,
-        messageCount: 0
+        messageCount: 0,
       })
-    } catch (err) {
-      logger.error("Failed to save user profile to database", err)
-    }
+      .catch((err) => logger.error("Failed to save user profile to database", err))
 
     logger.debug(`Profile updated for ${phoneNumber}: ${profile.name || profile.pushName || "unknown"}`)
   }

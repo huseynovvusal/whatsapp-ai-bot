@@ -63,7 +63,7 @@ export default tseslint.config(
       "coverage/",
       "*.js",
       "*.d.ts",
-      "eslint.config.js"
+      "eslint.config.mjs"
     ]
   }
 )

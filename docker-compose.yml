@@ -1,50 +1,137 @@
-version: '3.8'
+# Development stack: Postgres + pgvector, plus the bot with hot reload.
+#
+#   docker compose up                 # dev, hot reload on host edits
+#   docker compose --profile prod up  # production build instead
+#
+# The `app` service bind-mounts ./src, ./views and ./public, so editing a file
+# on the host restarts the server inside the container within a second.
 
 services:
-  whatsapp-bot:
+  db:
+    # pgvector's own image is Postgres 16 with the extension already compiled
+    # in, which avoids an init container or a manual CREATE EXTENSION step.
+    image: pgvector/pgvector:pg16
+    container_name: whatsapp-bot-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-botuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-botpass}
+      POSTGRES_DB: ${POSTGRES_DB:-whatsapp_bot}
+    ports:
+      # Exposed so the database can be inspected with psql from the host.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # The app waits on this, so it never starts before Postgres accepts
+      # connections — otherwise first boot races and the app crashes.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-botuser} -d ${POSTGRES_DB:-whatsapp_bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - whatsapp-bot-network
+
+  app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: whatsapp-ai-bot
+      target: dev
+    container_name: whatsapp-ai-bot-dev
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "${PORT:-3000}:3000"
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - BOT_NAME=${BOT_NAME:-@bot}
-      - ADMIN_NUMBERS=${ADMIN_NUMBERS}
-      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-flash}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - MEMORY_WINDOW_MS=${MEMORY_WINDOW_MS:-3600000}
-      - SYSTEM_PROMPT=${SYSTEM_PROMPT:-You are a helpful AI assistant.}
-      - RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS:-2}
-      - RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS:-60000}
-      - ENABLE_PRIVATE_CHAT=${ENABLE_PRIVATE_CHAT:-true}
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH}
-      - SESSION_SECRET=${SESSION_SECRET}
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-botuser}:${POSTGRES_PASSWORD:-botpass}@db:5432/${POSTGRES_DB:-whatsapp_bot}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BOT_NAME: ${BOT_NAME:-@bot}
+      ADMIN_NUMBERS: ${ADMIN_NUMBERS:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      MEMORY_WINDOW_MS: ${MEMORY_WINDOW_MS:-86400000}
+      MEMORY_MESSAGE_LIMIT: ${MEMORY_MESSAGE_LIMIT:-50}
+      SYSTEM_PROMPT: ${SYSTEM_PROMPT:-You are a helpful AI assistant.}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-2}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      ENABLE_PRIVATE_CHAT: ${ENABLE_PRIVATE_CHAT:-true}
+      ACCESS_CONTROL_MODE: ${ACCESS_CONTROL_MODE:-disabled}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
     volumes:
-      # Persist WhatsApp session
+      # Hot reload: these are the paths nodemon watches.
+      - ./src:/app/src
+      - ./views:/app/views
+      - ./public:/app/public
+      - ./scripts:/app/scripts
+      - ./prisma:/app/prisma
+      - ./tsconfig.json:/app/tsconfig.json
+      # Persist the WhatsApp session and logs across restarts.
       - ./auth_info_baileys:/app/auth_info_baileys
-      # Persist database
-      - ./data:/app/data
-      # Persist logs
       - ./logs:/app/logs
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      # Anonymous volume: keeps the container's node_modules (built for Alpine)
+      # from being shadowed by the host's, the usual cause of "invalid ELF
+      # header" when mounting source into a Node image.
+      - /app/node_modules
+    networks:
+      - whatsapp-bot-network
+
+  # Production build. Not started by default — use `--profile prod`.
+  app-prod:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: whatsapp-ai-bot
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-botuser}:${POSTGRES_PASSWORD:-botpass}@db:5432/${POSTGRES_DB:-whatsapp_bot}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BOT_NAME: ${BOT_NAME:-@bot}
+      ADMIN_NUMBERS: ${ADMIN_NUMBERS:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      SYSTEM_PROMPT: ${SYSTEM_PROMPT:-You are a helpful AI assistant.}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      # Both are mandatory in production, but they are NOT declared with the
+      # `:?` required-variable syntax: Compose interpolates every service
+      # regardless of profile, so that would break `docker compose up` for the
+      # dev stack too. The app itself refuses to boot in production without
+      # them (see auth.middleware.ts and index.ts), which is the single place
+      # this rule is enforced.
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+    volumes:
+      - ./auth_info_baileys:/app/auth_info_baileys
+      - ./logs:/app/logs
     networks:
       - whatsapp-bot-network
 
 networks:
   whatsapp-bot-network:
     driver: bridge
+
+volumes:
+  postgres-data:

@@ -25,7 +25,10 @@ export class Config {
   public GEMINI_MODEL?: string
 
   // Memory Config
+  /** Short-term memory retention in ms. 0 disables expiry entirely. */
   public MEMORY_WINDOW_MS: number
+  /** Messages kept per chat in short-term memory. 0 means unlimited. */
+  public MEMORY_MESSAGE_LIMIT: number
   public SYSTEM_PROMPT: string
   // Private chat control
   public ENABLE_PRIVATE_CHAT: boolean
@@ -58,7 +61,15 @@ export class Config {
     this.GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash"
 
     // Memory
-    this.MEMORY_WINDOW_MS = Number(process.env.MEMORY_WINDOW_MS) || 3600000
+    // `|| default` would turn an explicit 0 ("unlimited") back into the default,
+    // so these are parsed so that 0 survives.
+    const numberOr = (raw: string | undefined, fallback: number): number => {
+      if (raw === undefined || raw.trim() === "") return fallback
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+    }
+    this.MEMORY_WINDOW_MS = numberOr(process.env.MEMORY_WINDOW_MS, 24 * 60 * 60 * 1000)
+    this.MEMORY_MESSAGE_LIMIT = numberOr(process.env.MEMORY_MESSAGE_LIMIT, 50)
     this.SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || "You are a helpful AI assistant."
 
     // Rate Limiting
