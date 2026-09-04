@@ -969,12 +969,14 @@ Instructions: You can mention people by using @Name format (e.g., @John). When y
         for (const key in allMessages) totalMessages += (allMessages[key] || []).length
 
         const currentProvider = (runtimeConfig.get("llmProvider") as any) || config.LLM_PROVIDER
-        const currentModel =
-          currentProvider === "openai"
-            ? (runtimeConfig.get("openaiModel") as string) ||
-              process.env.OPENAI_MODEL ||
-              "gpt-4o-mini"
-            : config.GEMINI_MODEL
+        let currentModel = ""
+        if (currentProvider === "openai") {
+          currentModel = (runtimeConfig.get("openaiModel") as string) || process.env.OPENAI_MODEL || "gpt-4o-mini"
+        } else if (currentProvider === "azure") {
+          currentModel = (runtimeConfig.get("azureOpenaiDeployment") as string) || config.AZURE_OPENAI_DEPLOYMENT || "azure-deployment"
+        } else {
+          currentModel = config.GEMINI_MODEL || "gemini-1.5-flash"
+        }
 
         // Report the value actually in force, not the env default it ignored.
         const windowMs = Number(runtimeConfig.get("memoryWindowMs") ?? config.MEMORY_WINDOW_MS)

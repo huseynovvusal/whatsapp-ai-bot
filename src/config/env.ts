@@ -18,11 +18,16 @@ export class Config {
   public ADMIN_NUMBERS: string[]
 
   // LLM Config
-  public LLM_PROVIDER: "openai" | "gemini"
+  public LLM_PROVIDER: "openai" | "gemini" | "azure"
   public OPENAI_API_KEY?: string
   public OPENAI_MODEL?: string
   public GEMINI_API_KEY?: string
   public GEMINI_MODEL?: string
+  public AZURE_OPENAI_API_KEY?: string
+  public AZURE_OPENAI_ENDPOINT?: string
+  public AZURE_OPENAI_DEPLOYMENT?: string
+  public AZURE_OPENAI_EMBEDDING_DEPLOYMENT?: string
+  public AZURE_OPENAI_API_VERSION?: string
 
   // Memory Config
   /** Short-term memory retention in ms. 0 disables expiry entirely. */
@@ -54,11 +59,16 @@ export class Config {
     this.ADMIN_NUMBERS = process.env.ADMIN_NUMBERS?.split(",") || []
 
     // LLM Config
-    this.LLM_PROVIDER = (process.env.LLM_PROVIDER as "openai" | "gemini") || "openai"
+    this.LLM_PROVIDER = (process.env.LLM_PROVIDER as "openai" | "gemini" | "azure") || "openai"
     // this.OPENAI_API_KEY = process.env.OPENAI_API_KEY
     // this.OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini"
     this.GEMINI_API_KEY = process.env.GEMINI_API_KEY
     this.GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash"
+    this.AZURE_OPENAI_API_KEY = process.env.AZURE_OPENAI_API_KEY
+    this.AZURE_OPENAI_ENDPOINT = process.env.AZURE_OPENAI_ENDPOINT
+    this.AZURE_OPENAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT
+    this.AZURE_OPENAI_EMBEDDING_DEPLOYMENT = process.env.AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+    this.AZURE_OPENAI_API_VERSION = process.env.AZURE_OPENAI_API_VERSION || "2023-05-15"
 
     // Memory
     // `|| default` would turn an explicit 0 ("unlimited") back into the default,
